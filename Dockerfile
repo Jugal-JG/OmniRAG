@@ -21,6 +21,6 @@ COPY . .
 
 RUN mkdir -p uploads cache
 
-EXPOSE 5000
+EXPOSE 10000
 
-CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-5000} --workers 1 --threads 4 --timeout 600"]
+CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 4 --timeout 600 --access-logfile - --error-logfile -"]
