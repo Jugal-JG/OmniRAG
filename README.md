@@ -1,4 +1,4 @@
-# 🦙 LlamaIndex Multi-Engine Explorer
+# 🦙 OmniRAG Multi-Engine Explorer
 
 A production-ready Flask application that showcases **6 distinct LlamaIndex query engines** behind a single unified interface. Upload documents, ask questions, and watch the smart router automatically pick the best engine — or manually toggle Multi-Document and ReAct Thinking modes.
 
