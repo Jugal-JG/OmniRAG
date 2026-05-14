@@ -162,6 +162,8 @@ cache/
 *.jpeg
 *.gif
 *.html
+!frontend/**/*.html
+!templates/**/*.html
 *.md
 !README.md
 !requirements.txt
