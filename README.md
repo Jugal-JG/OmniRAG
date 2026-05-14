@@ -64,11 +64,13 @@ Smart Router Decision Flow:
 ```
 
 ### Multi-Document Agent Architecture (Dual-LLM)
+
 The Multi-Document engine uses a tiered orchestration strategy:
+
 1. **Top-Level Agent** (`Google Gemma 4-31B`): Orchestrates across all per-document agents.
 2. **Per-Doc Agents** (`Google Gemma 4-31B`): Each document has a `FunctionAgent` with vector and summary tools.
 3. **Synthesis** (`Groq Llama 4 Scout`): Fast final answering from retrieved chunks (with Gemma fallback if rate-limited).
-```
+
 
 ---
 
@@ -95,13 +97,7 @@ The Multi-Document engine uses a tiered orchestration strategy:
 
 ---
 
-## 🚀 Quick Start
 
-### 1. Clone & Navigate
-
-```bash
-cd third_party/LlamaIndex/app
-```
 
 ### 2. Install Dependencies
 
@@ -129,6 +125,7 @@ COHERE_API_KEY=your_cohere_api_key          # For reranking
 ```
 
 > **Where to get API keys:**
+>
 > - **Mistral** → [console.mistral.ai](https://console.mistral.ai/)
 > - **Google** → [aistudio.google.com](https://aistudio.google.com/apikey)
 > - **Groq** → [console.groq.com](https://console.groq.com/)
@@ -190,17 +187,17 @@ app/
 
 ### Engine Modes
 
-| Mode | How to Activate | Best For |
-|---|---|---|
-| **Auto (default)** | Just ask a question | The router picks the best engine |
-| **Multi-Document** | Toggle in sidebar | Cross-document comparison with per-file agents |
-| **Thinking (ReAct)** | Toggle in sidebar | Step-by-step reasoning with visible tool calls |
+| Mode                       | How to Activate     | Best For                                       |
+| -------------------------- | ------------------- | ---------------------------------------------- |
+| **Auto (default)**   | Just ask a question | The router picks the best engine               |
+| **Multi-Document**   | Toggle in sidebar   | Cross-document comparison with per-file agents |
+| **Thinking (ReAct)** | Toggle in sidebar   | Step-by-step reasoning with visible tool calls |
 
 ### Supported File Types
 
-| Category | Extensions |
-|---|---|
-| **Text** | `.pdf`, `.txt`, `.html`, `.md` |
+| Category        | Extensions                              |
+| --------------- | --------------------------------------- |
+| **Text**  | `.pdf`, `.txt`, `.html`, `.md`  |
 | **Image** | `.png`, `.jpg`, `.jpeg`, `.gif` |
 
 > **Tip:** Upload images + text together — the router automatically merges multimodal and text analysis.
@@ -211,17 +208,17 @@ app/
 
 All configuration is centralized in `config.py`:
 
-| Setting | Default | Description |
-|---|---|---|
-| `CHUNK_SIZE` | `1024` | Token chunk size for document splitting |
-| `SIMILARITY_TOP_K` | `8` | Number of similar nodes to retrieve |
-| `GOOGLE_LLM` | `gemma-4-31b-it` | LLM for Multi-Doc, Router, Sub-Question |
-| `GEMINI_LLM` | `gemini-2.5-flash` | LLM for ReAct Agent |
-| `MISTRAL_LLM` | `mistral-large-latest` | LLM for Basic RAG |
-| `GROQ_LLM` | `llama-4-scout-17b-16e-instruct` | LLM for routing & multimodal |
-| `EMBED_MODEL` | `BAAI/bge-base-en-v1.5` | HuggingFace embedding model |
-| `MISTRAL_EMBED_MODEL` | `mistral-embed` | Mistral embedding model |
-| `MAX_CONTENT_LENGTH` | `50 MB` | Maximum upload file size |
+| Setting                 | Default                            | Description                             |
+| ----------------------- | ---------------------------------- | --------------------------------------- |
+| `CHUNK_SIZE`          | `1024`                           | Token chunk size for document splitting |
+| `SIMILARITY_TOP_K`    | `8`                              | Number of similar nodes to retrieve     |
+| `GOOGLE_LLM`          | `gemma-4-31b-it`                 | LLM for Multi-Doc, Router, Sub-Question |
+| `GEMINI_LLM`          | `gemini-2.5-flash`               | LLM for ReAct Agent                     |
+| `MISTRAL_LLM`         | `mistral-large-latest`           | LLM for Basic RAG                       |
+| `GROQ_LLM`            | `llama-4-scout-17b-16e-instruct` | LLM for routing & multimodal            |
+| `EMBED_MODEL`         | `BAAI/bge-base-en-v1.5`          | HuggingFace embedding model             |
+| `MISTRAL_EMBED_MODEL` | `mistral-embed`                  | Mistral embedding model                 |
+| `MAX_CONTENT_LENGTH`  | `50 MB`                          | Maximum upload file size                |
 
 ---
 
@@ -229,11 +226,11 @@ All configuration is centralized in `config.py`:
 
 The application handles Google API instability (common with Gemma 4-31B on free tier) through **layered retry**:
 
-| Layer | Scope | Retries | Backoff |
-|---|---|---|---|
-| **GoogleGenAI `max_retries`** | Per individual API call | 5 | Built-in tenacity |
-| **`_invoke_agent()`** | Per agent workflow invocation | 5 | 2s → 4s → 8s → 16s → 16s |
-| **`@with_retry` decorator** | Per engine `run()` call | 3 | Exponential (3s–20s) |
+| Layer                                 | Scope                         | Retries | Backoff                      |
+| ------------------------------------- | ----------------------------- | ------- | ---------------------------- |
+| **GoogleGenAI `max_retries`** | Per individual API call       | 5       | Built-in tenacity            |
+| **`_invoke_agent()`**         | Per agent workflow invocation | 5       | 2s → 4s → 8s → 16s → 16s |
+| **`@with_retry` decorator**   | Per engine `run()` call     | 3       | Exponential (3s–20s)        |
 
 **Retryable errors:** `500 Internal Server Error`, `502 Bad Gateway`, `503 Service Unavailable`, `MALFORMED_RESPONSE`, `terminated early`
 
@@ -241,11 +238,11 @@ The application handles Google API instability (common with Gemma 4-31B on free 
 
 ## 🐍 Python Compatibility
 
-| Python Version | Status | Notes |
-|---|---|---|
-| **3.12** | ✅ Fully supported | Recommended |
-| **3.13** | ✅ Fully supported | — |
-| **3.14** | ✅ Supported | `nest_asyncio` removed; async runs in dedicated threads via `concurrent.futures + asyncio.run()` |
+| Python Version | Status             | Notes                                                                                                |
+| -------------- | ------------------ | ---------------------------------------------------------------------------------------------------- |
+| **3.12** | ✅ Fully supported | Recommended                                                                                          |
+| **3.13** | ✅ Fully supported | —                                                                                                   |
+| **3.14** | ✅ Supported       | `nest_asyncio` removed; async runs in dedicated threads via `concurrent.futures + asyncio.run()` |
 
 > **Note:** Python 3.14 changed `asyncio` internals such that `nest_asyncio` can no longer patch the event loop. The application uses a thread-based async execution pattern to remain compatible.
 
@@ -255,14 +252,14 @@ The application handles Google API instability (common with Gemma 4-31B on free 
 
 Each engine in this app is based on a standalone Jupyter notebook in the parent directory:
 
-| Notebook | Engine |
-|---|---|
-| `Basic_RAG_With_LlamaIndex.ipynb` | Basic RAG |
-| `Router_Query_Engine.ipynb` | Router Engine |
-| `SubQuestion_Query_Engine.ipynb` | Sub-Question |
-| `Multi_Document_Agents.ipynb` | Multi-Document Agent |
-| `Multi_Modal.ipynb` | Multi-Modal |
-| `ReAct_Agent.ipynb` | ReAct Agent |
+| Notebook                            | Engine               |
+| ----------------------------------- | -------------------- |
+| `Basic_RAG_With_LlamaIndex.ipynb` | Basic RAG            |
+| `Router_Query_Engine.ipynb`       | Router Engine        |
+| `SubQuestion_Query_Engine.ipynb`  | Sub-Question         |
+| `Multi_Document_Agents.ipynb`     | Multi-Document Agent |
+| `Multi_Modal.ipynb`               | Multi-Modal          |
+| `ReAct_Agent.ipynb`               | ReAct Agent          |
 
 ---
 
@@ -280,6 +277,7 @@ The Gemma 4-31B model on Google's free tier frequently returns transient 500 err
 ### Scanned PDFs / OCR Issues
 
 If you upload a scanned PDF and see "Empty PDF text", ensure you have Tesseract OCR installed:
+
 - **Windows**: `winget install UB-Mannheim.TesseractOCR`
 - **Linux**: `sudo apt install tesseract-ocr`
 - **Mac**: `brew install tesseract`
