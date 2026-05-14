@@ -10,7 +10,7 @@ import json
 import uuid
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, session
+from flask import Flask, jsonify, request, session
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -134,11 +134,13 @@ def _save_to_history(q: str, a: str, approach: str):
 
 @app.route("/")
 def index():
-    session.setdefault("session_id", str(uuid.uuid4()))
-    session.setdefault("uploaded_files", [])
-    session.setdefault("history", [])
-    missing = Config.missing_keys()
-    return render_template("index.html", missing_keys=missing)
+    return jsonify(
+        {
+            "ok": True,
+            "service": "OmniRAG backend",
+            "frontend": "Deploy app/frontend on Vercel and set OMNIRAG_API_BASE_URL to this Space URL.",
+        }
+    )
 
 
 @app.route("/upload", methods=["POST"])
