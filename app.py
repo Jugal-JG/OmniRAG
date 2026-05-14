@@ -1,0 +1,290 @@
+"""Flask application: LlamaIndex Multi-Engine Explorer."""
+
+# ── NOTE: nest_asyncio removed ────────────────────────────────────────────────
+# Python 3.14 no longer allows nest_asyncio to monkey-patch asyncio.
+# Agent engines (multi_document, react_agent) now run async code in dedicated
+# threads via concurrent.futures + asyncio.run(), which provides a clean
+# event loop without needing nest_asyncio.
+
+import uuid
+from pathlib import Path
+
+from flask import Flask, jsonify, render_template, request, session
+from werkzeug.utils import secure_filename
+
+from config import Config
+from engines import get_engine
+from engines.multimodal import run as multimodal_run
+from router import QueryRouter
+from utils import classify_files
+
+app = Flask(__name__)
+app.secret_key = Config.SECRET_KEY
+app.config["UPLOAD_FOLDER"] = Config.UPLOAD_FOLDER
+app.config["MAX_CONTENT_LENGTH"] = Config.MAX_CONTENT_LENGTH
+
+ALLOWED_EXTENSIONS = {".txt", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".html", ".md"}
+MAX_HISTORY = 3
+
+Path(Config.UPLOAD_FOLDER).mkdir(parents=True, exist_ok=True)
+Path(Config.CACHE_FOLDER).mkdir(parents=True, exist_ok=True)
+
+router = QueryRouter()
+
+
+def allowed_file(filename: str) -> bool:
+    return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
+
+
+def _session_dir() -> Path:
+    sid = session.setdefault("session_id", str(uuid.uuid4()))
+    d = Path(Config.UPLOAD_FOLDER) / sid
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _make_standalone(query_text: str) -> str:
+    """
+    If conversation history exists, use Groq to rewrite the follow-up as a
+    fully self-contained question so similarity search isn't polluted by history.
+    """
+    history = session.get("history", [])
+    if not history:
+        return query_text
+
+    last_turns = history[-MAX_HISTORY:]
+    history_text = "\n".join(
+        f"User: {t['q']}\nAssistant: {t['a']}" for t in last_turns
+    )
+    prompt = (
+        f"Conversation history:\n{history_text}\n\n"
+        f"Follow-up question: {query_text}\n\n"
+        "Rewrite the follow-up as a single, fully self-contained question that includes "
+        "all context needed from the conversation above. "
+        "If the question is already self-contained, return it unchanged. "
+        "Output ONLY the rewritten question — no explanation, no quotes."
+    )
+    try:
+        from groq import Groq
+
+        client = Groq(api_key=Config.GROQ_API_KEY)
+        resp = client.chat.completions.create(
+            model=Config.GROQ_LLM,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=150,
+            temperature=0,
+        )
+        reformulated = resp.choices[0].message.content.strip()
+        return reformulated if reformulated else query_text
+    except Exception as e:
+        print(f"[standalone-question] Groq reformulation failed ({e}), using original query")
+        return query_text
+
+
+def _save_to_history(q: str, a: str, approach: str):
+    history = session.get("history", [])
+    history.append({"q": q, "a": a, "approach": approach})
+    session["history"] = history[-20:]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Routes
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@app.route("/")
+def index():
+    session.setdefault("session_id", str(uuid.uuid4()))
+    session.setdefault("uploaded_files", [])
+    session.setdefault("history", [])
+    missing = Config.missing_keys()
+    return render_template("index.html", missing_keys=missing)
+
+
+@app.route("/upload", methods=["POST"])
+def upload():
+    upload_dir = _session_dir()
+    uploaded = []
+    errors = []
+
+    for f in request.files.getlist("files"):
+        if not f or not f.filename:
+            continue
+        if not allowed_file(f.filename):
+            errors.append(f"{f.filename} — unsupported file type")
+            continue
+        filename = secure_filename(f.filename)
+        f.save(str(upload_dir / filename))
+        uploaded.append(filename)
+
+    existing = session.get("uploaded_files", [])
+    combined = list(dict.fromkeys(existing + uploaded))
+    session["uploaded_files"] = combined
+
+    # Clear conversation history when files change — stale context from
+    # previous file sets can confuse the standalone-query reformulator.
+    if uploaded:
+        session["history"] = []
+
+    return jsonify({"success": True, "files": combined, "errors": errors})
+
+
+@app.route("/remove-file", methods=["POST"])
+def remove_file():
+    data = request.get_json(force=True)
+    fname = data.get("filename", "")
+    upload_dir = _session_dir()
+    filenames = session.get("uploaded_files", [])
+
+    if fname in filenames:
+        filenames.remove(fname)
+        try:
+            (upload_dir / fname).unlink(missing_ok=True)
+        except Exception:
+            pass
+    session["uploaded_files"] = filenames
+
+    # Clear conversation history when files change
+    session["history"] = []
+
+    return jsonify({"success": True, "files": filenames})
+
+
+@app.route("/clear-files", methods=["POST"])
+def clear_files():
+    upload_dir = _session_dir()
+    for f in session.get("uploaded_files", []):
+        try:
+            (upload_dir / f).unlink(missing_ok=True)
+        except Exception:
+            pass
+    session["uploaded_files"] = []
+    return jsonify({"success": True})
+
+
+@app.route("/new-chat", methods=["POST"])
+def new_chat():
+    """Clear conversation history only — keep uploaded files intact."""
+    session["history"] = []
+    return jsonify({"success": True})
+
+
+@app.route("/query", methods=["POST"])
+def query():
+    data = request.get_json(force=True)
+    query_text = (data.get("query") or "").strip()
+    multi_doc_mode = bool(data.get("multi_doc"))
+    thinking_mode = bool(data.get("thinking"))
+
+    if not query_text:
+        return jsonify({"error": "Query cannot be empty."}), 400
+
+    upload_dir = _session_dir()
+    filenames = session.get("uploaded_files", [])
+
+    filenames = [f for f in filenames if (upload_dir / f).exists()]
+    session["uploaded_files"] = filenames
+
+    images, texts = classify_files(filenames)
+
+    standalone_query = _make_standalone(query_text)
+    standalone_note = (
+        f" (reformulated: '{standalone_query}')"
+        if standalone_query != query_text
+        else ""
+    )
+
+    # ── Route ──────────────────────────────────────────────────────────────────
+    routing = router.route(
+        query=query_text,
+        filenames=filenames,
+        multi_doc_mode=multi_doc_mode,
+        thinking_mode=thinking_mode,
+    )
+    label = routing["label"]
+    if standalone_note:
+        routing["reason"] += standalone_note
+
+    # ── Execute ────────────────────────────────────────────────────────────────
+    try:
+        if label == "merged":
+            mm_result = multimodal_run(standalone_query, images, upload_dir)
+
+            text_label = router.route(
+                query=query_text, filenames=texts, multi_doc_mode=False, thinking_mode=False
+            )["label"]
+            text_engine = get_engine(text_label)
+            text_result = text_engine(standalone_query, texts, upload_dir)
+
+            from groq import Groq
+
+            client = Groq(api_key=Config.GROQ_API_KEY)
+            merge_prompt = (
+                f"Image analysis result:\n{mm_result['answer']}\n\n"
+                f"Text document analysis result:\n{text_result['answer']}\n\n"
+                f"Original question: {query_text}\n\n"
+                "Synthesize both analyses into one comprehensive, clear answer."
+            )
+            merge_resp = client.chat.completions.create(
+                model=Config.GROQ_LLM,
+                messages=[{"role": "user", "content": merge_prompt}],
+                max_tokens=1024,
+            )
+            merged_answer = merge_resp.choices[0].message.content
+
+            result = {
+                "answer": merged_answer,
+                "sources": text_result.get("sources", []),
+                "thinking_steps": [
+                    f"[Image analysis] {mm_result['answer'][:300]}…",
+                    f"[Text analysis ({text_label})] {text_result['answer'][:300]}…",
+                ],
+            }
+        else:
+            engine_fn = get_engine(label)
+            effective_files = images if label == "multimodal" else filenames
+            result = engine_fn(standalone_query, effective_files, upload_dir)
+
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        return (
+            jsonify(
+                {
+                    "error": str(exc),
+                    "approach": routing["approach"],
+                    "router_reason": routing["reason"],
+                }
+            ),
+            500,
+        )
+
+    answer = result.get("answer", "")
+    _save_to_history(query_text, answer[:600], routing["approach"])
+
+    return jsonify(
+        {
+            "approach": routing["approach"],
+            "approach_label": label,
+            "router_reason": routing["reason"],
+            "answer": answer,
+            "thinking_steps": result.get("thinking_steps", []),
+            "sources": result.get("sources", []),
+        }
+    )
+
+
+@app.route("/api-status")
+def api_status():
+    return jsonify(
+        {
+            "mistral": bool(Config.MISTRAL_API_KEY),
+            "google": bool(Config.GOOGLE_API_KEY),
+            "groq": bool(Config.GROQ_API_KEY),
+            "cohere": bool(Config.COHERE_API_KEY),
+        }
+    )
+
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5000, use_reloader=False)
