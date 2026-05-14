@@ -21,5 +21,7 @@ uploads/
 *.jpg
 *.jpeg
 *.gif
+*.html
+!templates/**/*.html
 *.zip
 *.log

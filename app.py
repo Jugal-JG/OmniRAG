@@ -6,10 +6,12 @@
 # threads via concurrent.futures + asyncio.run(), which provides a clean
 # event loop without needing nest_asyncio.
 
+import json
 import uuid
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, session
+from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 from config import Config
@@ -22,6 +24,9 @@ app = Flask(__name__)
 app.secret_key = Config.SECRET_KEY
 app.config["UPLOAD_FOLDER"] = Config.UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = Config.MAX_CONTENT_LENGTH
+app.config["SESSION_COOKIE_SAMESITE"] = Config.SESSION_COOKIE_SAMESITE
+app.config["SESSION_COOKIE_SECURE"] = Config.SESSION_COOKIE_SECURE
+CORS(app, origins=Config.CORS_ORIGINS, supports_credentials=True)
 
 ALLOWED_EXTENSIONS = {".txt", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".html", ".md"}
 MAX_HISTORY = 3
@@ -36,11 +41,45 @@ def allowed_file(filename: str) -> bool:
     return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
 
 
+def _client_session_id() -> str:
+    raw_sid = request.headers.get("X-Omnirag-Session-Id") or session.get("session_id")
+    try:
+        sid = str(uuid.UUID(str(raw_sid)))
+    except (TypeError, ValueError):
+        sid = str(uuid.uuid4())
+    session["session_id"] = sid
+    return sid
+
+
 def _session_dir() -> Path:
-    sid = session.setdefault("session_id", str(uuid.uuid4()))
+    sid = _client_session_id()
     d = Path(Config.UPLOAD_FOLDER) / sid
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _uploaded_files(upload_dir: Path) -> list[str]:
+    return sorted(
+        p.name for p in upload_dir.iterdir() if p.is_file() and allowed_file(p.name)
+    )
+
+
+def _history_file(upload_dir: Path) -> Path:
+    return upload_dir / ".history.json"
+
+
+def _load_history(upload_dir: Path) -> list[dict]:
+    try:
+        with _history_file(upload_dir).open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _save_history_file(upload_dir: Path, history: list[dict]) -> None:
+    with _history_file(upload_dir).open("w", encoding="utf-8") as f:
+        json.dump(history[-20:], f)
 
 
 def _make_standalone(query_text: str) -> str:
@@ -48,7 +87,7 @@ def _make_standalone(query_text: str) -> str:
     If conversation history exists, use Groq to rewrite the follow-up as a
     fully self-contained question so similarity search isn't polluted by history.
     """
-    history = session.get("history", [])
+    history = _load_history(_session_dir())
     if not history:
         return query_text
 
@@ -82,9 +121,10 @@ def _make_standalone(query_text: str) -> str:
 
 
 def _save_to_history(q: str, a: str, approach: str):
-    history = session.get("history", [])
+    upload_dir = _session_dir()
+    history = _load_history(upload_dir)
     history.append({"q": q, "a": a, "approach": approach})
-    session["history"] = history[-20:]
+    _save_history_file(upload_dir, history)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -117,14 +157,13 @@ def upload():
         f.save(str(upload_dir / filename))
         uploaded.append(filename)
 
-    existing = session.get("uploaded_files", [])
+    existing = _uploaded_files(upload_dir)
     combined = list(dict.fromkeys(existing + uploaded))
-    session["uploaded_files"] = combined
 
     # Clear conversation history when files change — stale context from
     # previous file sets can confuse the standalone-query reformulator.
     if uploaded:
-        session["history"] = []
+        _save_history_file(upload_dir, [])
 
     return jsonify({"success": True, "files": combined, "errors": errors})
 
@@ -134,7 +173,7 @@ def remove_file():
     data = request.get_json(force=True)
     fname = data.get("filename", "")
     upload_dir = _session_dir()
-    filenames = session.get("uploaded_files", [])
+    filenames = _uploaded_files(upload_dir)
 
     if fname in filenames:
         filenames.remove(fname)
@@ -142,10 +181,8 @@ def remove_file():
             (upload_dir / fname).unlink(missing_ok=True)
         except Exception:
             pass
-    session["uploaded_files"] = filenames
-
     # Clear conversation history when files change
-    session["history"] = []
+    _save_history_file(upload_dir, [])
 
     return jsonify({"success": True, "files": filenames})
 
@@ -153,19 +190,19 @@ def remove_file():
 @app.route("/clear-files", methods=["POST"])
 def clear_files():
     upload_dir = _session_dir()
-    for f in session.get("uploaded_files", []):
+    for f in _uploaded_files(upload_dir):
         try:
             (upload_dir / f).unlink(missing_ok=True)
         except Exception:
             pass
-    session["uploaded_files"] = []
+    _save_history_file(upload_dir, [])
     return jsonify({"success": True})
 
 
 @app.route("/new-chat", methods=["POST"])
 def new_chat():
     """Clear conversation history only — keep uploaded files intact."""
-    session["history"] = []
+    _save_history_file(_session_dir(), [])
     return jsonify({"success": True})
 
 
@@ -180,10 +217,9 @@ def query():
         return jsonify({"error": "Query cannot be empty."}), 400
 
     upload_dir = _session_dir()
-    filenames = session.get("uploaded_files", [])
+    filenames = _uploaded_files(upload_dir)
 
     filenames = [f for f in filenames if (upload_dir / f).exists()]
-    session["uploaded_files"] = filenames
 
     images, texts = classify_files(filenames)
 
@@ -284,6 +320,11 @@ def api_status():
             "cohere": bool(Config.COHERE_API_KEY),
         }
     )
+
+
+@app.route("/healthz")
+def healthz():
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":

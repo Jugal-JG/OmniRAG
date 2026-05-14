@@ -19,10 +19,21 @@ class Config:
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
 
-    UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "uploads")
-    CACHE_FOLDER = os.path.join(os.path.dirname(__file__), "cache")
+    UPLOAD_FOLDER = os.getenv(
+        "UPLOAD_FOLDER", os.path.join(os.path.dirname(__file__), "uploads")
+    )
+    CACHE_FOLDER = os.getenv("CACHE_FOLDER", os.path.join(os.path.dirname(__file__), "cache"))
 
     SECRET_KEY = os.getenv("FLASK_SECRET_KEY", os.urandom(32).hex())
+    SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "None")
+    SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "true").lower() == "true"
+    CORS_ORIGINS = [
+        origin.strip()
+        for origin in os.getenv(
+            "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+        ).split(",")
+        if origin.strip()
+    ]
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB
 
     EMBED_MODEL = "BAAI/bge-base-en-v1.5"
