@@ -1,3 +1,13 @@
+---
+title: OmniRAG
+emoji: 🦙
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+license: mit
+---
 
 # OmniRAG Multi-Engine Explorer
 
@@ -9,23 +19,21 @@ The current production architecture is split across two hosts:
 - **Frontend UI:** Vercel static deployment from `frontend/`.
 - **Browser API calls:** the Vercel frontend calls the Hugging Face backend through `OMNIRAG_API_BASE_URL`.
 
-## Demo Images
+## Demo
 
-Demo screenshots should be placed in [`demo-images/`](./demo-images/). The folder is already tracked, and `.gitignore` allows images inside it.
+The screenshots below show example runs for each OmniRAG engine. Full-size images live in [`demo-images/`](./demo-images/).
 
-Suggested image names:
+| Basic RAG | Router Query |
+|---|---|
+| ![Basic RAG demo](./demo-images/Basic%20RAG.jpeg) | ![Router Query demo](./demo-images/RouterQuery.jpeg) |
 
-- `demo-images/home.png` - initial app screen
-- `demo-images/upload.png` - file upload flow
-- `demo-images/chat-answer.png` - answer with router reasoning and sources
-- `demo-images/multimodal.png` - image or mixed document query
+| Sub-Question Engine | Multi-Document Agent |
+|---|---|
+| ![Sub-Question Engine demo](./demo-images/Sub-Question%20Engine.jpeg) | ![Multi Document Agent demo](./demo-images/Multi%20Document%20Agent.jpeg) |
 
-After adding screenshots, embed them here, for example:
-
-```md
-![OmniRAG home](./demo-images/home.png)
-![Document answer](./demo-images/chat-answer.png)
-```
+| Multi-Modal | ReAct Agent |
+|---|---|
+| ![Multi Modal demo](./demo-images/Multi%20Modal.jpeg) | ![ReAct Agent demo](./demo-images/React%20Agent.jpeg) |
 
 ## Live Deployment Shape
 
