@@ -98,7 +98,7 @@ frontend/
 At build time, Vercel runs `npm run build`, which writes `config.js` using:
 
 ```env
-OMNIRAG_API_BASE_URL=https://jugal24-omnirag.hf.space
+OMNIRAG_API_BASE_URL=https://username-omnirag.hf.space
 ```
 
 For this GitHub repo, Vercel's **Root Directory** should be:
@@ -160,7 +160,7 @@ Use the Vercel production domain in `CORS_ORIGINS`. Include `http://localhost:30
 Required Vercel environment variable:
 
 ```env
-OMNIRAG_API_BASE_URL=https://jugal24-omnirag.hf.space
+OMNIRAG_API_BASE_URL=https://username-omnirag.hf.space
 ```
 
 Use the `.hf.space` URL, not the Hugging Face repository URL.
@@ -168,13 +168,13 @@ Use the `.hf.space` URL, not the Hugging Face repository URL.
 Correct:
 
 ```text
-https://jugal24-omnirag.hf.space
+https://username-omnirag.hf.space
 ```
 
 Incorrect:
 
 ```text
-https://huggingface.co/spaces/Jugal24/OmniRAG
+https://huggingface.co/spaces/username/OmniRAG
 ```
 
 ## Engines
