@@ -1,10 +1,12 @@
 # Demo Images
 
-Add OmniRAG screenshots here and reference them from the root README.
+OmniRAG screenshots referenced by the root README.
 
-Suggested files:
+Current files:
 
-- `home.png`
-- `upload.png`
-- `chat-answer.png`
-- `multimodal.png`
+- `Basic RAG.jpeg`
+- `RouterQuery.jpeg`
+- `Sub-Question Engine.jpeg`
+- `Multi Document Agent.jpeg`
+- `Multi Modal.jpeg`
+- `React Agent.jpeg`
