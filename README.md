@@ -1,13 +1,3 @@
----
-title: OmniRAG Multi-Engine Explorer
-emoji: 🔎
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-app_port: 7860
-pinned: false
-license: mit
----
 
 # OmniRAG Multi-Engine Explorer
 
@@ -22,6 +12,8 @@ The current production architecture is split across two hosts:
 ## Demo
 
 The screenshots below show example runs for each OmniRAG engine. Full-size images live in [`demo-images/`](./demo-images/).
+
+- **Public demo:** https://omni-rag-coral.vercel.app
 
 | Basic RAG                                       | Router Query                                       |
 | ----------------------------------------------- | -------------------------------------------------- |
