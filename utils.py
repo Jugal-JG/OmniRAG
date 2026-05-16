@@ -14,12 +14,27 @@ def is_rate_limit_error(exc):
     return "429" in msg or "rate limit" in msg or "too many requests" in msg or "quota" in msg
 
 
+def is_daily_quota_error(exc):
+    msg = str(exc).lower()
+    daily_markers = (
+        "tokens per day",
+        "requests per day",
+        " tpd",
+        " rpd",
+        "daily token",
+        "daily request",
+    )
+    return any(marker in msg for marker in daily_markers)
+
+
 def with_retry(fn):
     """Decorator: retry up to 3 times on rate-limit errors with exponential backoff."""
 
     @functools.wraps(fn)
     @retry(
-        retry=retry_if_exception(is_rate_limit_error),
+        retry=retry_if_exception(
+            lambda exc: is_rate_limit_error(exc) and not is_daily_quota_error(exc)
+        ),
         wait=wait_exponential(multiplier=1, min=3, max=20),
         stop=stop_after_attempt(3),
         reraise=True,
