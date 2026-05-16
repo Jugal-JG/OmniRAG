@@ -7,10 +7,11 @@
 # event loop without needing nest_asyncio.
 
 import json
+import logging
 import uuid
 from pathlib import Path
 
-from flask import Flask, jsonify, request, session
+from flask import Flask, jsonify, render_template, request, session
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -19,6 +20,12 @@ from engines import get_engine
 from engines.multimodal import run as multimodal_run
 from router import QueryRouter
 from utils import classify_files
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = Config.SECRET_KEY
@@ -62,6 +69,23 @@ def _uploaded_files(upload_dir: Path) -> list[str]:
     return sorted(
         p.name for p in upload_dir.iterdir() if p.is_file() and allowed_file(p.name)
     )
+
+
+def _looks_like_scanned_pdf(file_path: Path) -> bool:
+    if file_path.suffix.lower() != ".pdf":
+        return False
+
+    try:
+        import pypdf
+
+        reader = pypdf.PdfReader(str(file_path))
+        extracted = []
+        for page in reader.pages[: min(2, len(reader.pages))]:
+            extracted.append(page.extract_text() or "")
+        return len(" ".join(extracted).strip()) < 40
+    except Exception as exc:
+        logger.info("[upload] PDF scan check skipped for %s (%s)", file_path.name, exc)
+        return False
 
 
 def _history_file(upload_dir: Path) -> Path:
@@ -116,7 +140,7 @@ def _make_standalone(query_text: str) -> str:
         reformulated = resp.choices[0].message.content.strip()
         return reformulated if reformulated else query_text
     except Exception as e:
-        print(f"[standalone-question] Groq reformulation failed ({e}), using original query")
+        logger.info("[standalone-question] Groq reformulation failed (%s), using original query", e)
         return query_text
 
 
@@ -134,10 +158,15 @@ def _save_to_history(q: str, a: str, approach: str):
 
 @app.route("/")
 def index():
+    host = request.host.split(":", 1)[0]
+    if host in {"127.0.0.1", "localhost"}:
+        return render_template("index.html", missing_keys=Config.missing_keys())
+
     return jsonify(
         {
             "ok": True,
             "service": "OmniRAG backend",
+            "version": Config.APP_VERSION,
             "frontend": "Deploy app/frontend on Vercel and set OMNIRAG_API_BASE_URL to this Space URL.",
         }
     )
@@ -148,6 +177,7 @@ def upload():
     upload_dir = _session_dir()
     uploaded = []
     errors = []
+    warnings = []
 
     for f in request.files.getlist("files"):
         if not f or not f.filename:
@@ -156,8 +186,13 @@ def upload():
             errors.append(f"{f.filename} — unsupported file type")
             continue
         filename = secure_filename(f.filename)
-        f.save(str(upload_dir / filename))
+        file_path = upload_dir / filename
+        f.save(str(file_path))
         uploaded.append(filename)
+        if _looks_like_scanned_pdf(file_path):
+            warnings.append(
+                f"{filename} looks image-based/scanned, so answers may take longer."
+            )
 
     existing = _uploaded_files(upload_dir)
     combined = list(dict.fromkeys(existing + uploaded))
@@ -167,7 +202,9 @@ def upload():
     if uploaded:
         _save_history_file(upload_dir, [])
 
-    return jsonify({"success": True, "files": combined, "errors": errors})
+    return jsonify(
+        {"success": True, "files": combined, "errors": errors, "warnings": warnings}
+    )
 
 
 @app.route("/remove-file", methods=["POST"])
@@ -224,6 +261,15 @@ def query():
     filenames = [f for f in filenames if (upload_dir / f).exists()]
 
     images, texts = classify_files(filenames)
+    logger.info(
+        "[query] files=%s text=%s image=%s multi_doc=%s thinking=%s query=%r",
+        len(filenames),
+        len(texts),
+        len(images),
+        multi_doc_mode,
+        thinking_mode,
+        query_text,
+    )
 
     standalone_query = _make_standalone(query_text)
     standalone_note = (
@@ -242,6 +288,12 @@ def query():
     label = routing["label"]
     if standalone_note:
         routing["reason"] += standalone_note
+    logger.info(
+        "[query] route=%s approach=%s reason=%s",
+        label,
+        routing["approach"],
+        routing["reason"],
+    )
 
     # ── Execute ────────────────────────────────────────────────────────────────
     try:
@@ -281,6 +333,7 @@ def query():
         else:
             engine_fn = get_engine(label)
             effective_files = images if label == "multimodal" else filenames
+            logger.info("[query] executing engine=%s files=%s", label, effective_files)
             result = engine_fn(standalone_query, effective_files, upload_dir)
 
     except Exception as exc:
@@ -298,6 +351,7 @@ def query():
         )
 
     answer = result.get("answer", "")
+    logger.info("[query] completed engine=%s answer_chars=%s", label, len(answer))
     _save_to_history(query_text, answer[:600], routing["approach"])
 
     return jsonify(
@@ -320,13 +374,14 @@ def api_status():
             "google": bool(Config.GOOGLE_API_KEY),
             "groq": bool(Config.GROQ_API_KEY),
             "cohere": bool(Config.COHERE_API_KEY),
+            "version": Config.APP_VERSION,
         }
     )
 
 
 @app.route("/healthz")
 def healthz():
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "version": Config.APP_VERSION})
 
 
 if __name__ == "__main__":

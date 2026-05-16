@@ -12,7 +12,6 @@ from pathlib import Path
 
 from llama_index.core import (
     Settings,
-    SimpleDirectoryReader,
     StorageContext,
     VectorStoreIndex,
     load_index_from_storage,
@@ -77,29 +76,31 @@ async def _invoke_agent(agent: ReActAgent, query: str, max_retries: int = 5):
     raise last_exc
 
 def _build_or_load_index(fname: str, upload_dir: Path):
-    file_paths = [fname]
+    file_paths = [str(upload_dir / fname)]
     cache_path = index_cache.get_cache_path(file_paths, f"react_{fname}")
     is_pdf = fname.lower().endswith(".pdf")
 
-    # For non-PDFs, use cache if available
-    if not is_pdf and index_cache.is_cached(file_paths, f"react_{fname}"):
+    if index_cache.is_cache_usable(file_paths, f"react_{fname}", require_meta=is_pdf):
         ctx = StorageContext.from_defaults(persist_dir=str(cache_path))
         return load_index_from_storage(ctx)
 
-    # Always re-parse PDFs (cache may have been built with empty content)
     from doc_loader import load_documents
     docs = load_documents(upload_dir / fname)
 
-    if is_pdf:
-        print(f"[react] Rebuilding index for '{fname}'")
+    print(f"[react] Building index for '{fname}'")
     index = VectorStoreIndex.from_documents(docs)
     index.storage_context.persist(persist_dir=str(cache_path))
+    index_cache.save_documents_meta(file_paths, f"react_{fname}", docs)
     return index
 
 
 @with_retry
 def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
-    llm = GoogleGenAI(api_key=Config.GOOGLE_API_KEY, model=Config.GEMINI_LLM, max_retries=5)
+    llm = GoogleGenAI(
+        api_key=Config.GOOGLE_API_KEY,
+        model=Config.GEMINI_LLM,
+        max_retries=Config.GOOGLE_MAX_RETRIES,
+    )
     embed_model = model_cache.get_hf_embed(Config.EMBED_MODEL)
     Settings.llm = llm
     Settings.embed_model = embed_model

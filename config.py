@@ -12,9 +12,10 @@ def _int_env(name: str, default: int) -> int:
 
 
 class Config:
+    APP_VERSION = os.getenv("APP_VERSION", "1.5")
+
     MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
-    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")          # Gemini 2.5 Flash (react agent)
-    # Gemma 4-31b (multi-doc, subquestion, router)
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")          # Gemini models
     GOOGLE_API_KEY_GEMMA = os.getenv("GOOGLE_API_KEY_GEMMA", "")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
@@ -39,11 +40,14 @@ class Config:
     EMBED_MODEL = "BAAI/bge-base-en-v1.5"
     MISTRAL_EMBED_MODEL = "mistral-embed"
 
-    # LLM model names (matching the notebooks exactly)
-    MISTRAL_LLM = "mistral-large-latest"
-    GOOGLE_LLM = "gemma-4-31b-it"       # multi-document, subquestion, router
-    GEMINI_LLM = "gemini-2.5-flash"     # react agent
-    GROQ_LLM = "meta-llama/llama-4-scout-17b-16e-instruct"
+    # LLM model names. Env overrides let demos switch models without code edits.
+    MISTRAL_LLM = os.getenv("MISTRAL_LLM", "mistral-large-latest")
+    GOOGLE_LLM = os.getenv("GOOGLE_LLM", "gemini-3.1-flash-lite-preview")
+    GOOGLE_GEMMA_LLM = os.getenv("GOOGLE_GEMMA_LLM", "gemma-4-26b-a4b-it")
+    GEMINI_LLM = os.getenv("GEMINI_LLM", "gemini-2.5-flash")
+    GROQ_LLM = os.getenv("GROQ_LLM", "meta-llama/llama-4-scout-17b-16e-instruct")
+    GROQ_SUBQUESTION_LLM = os.getenv("GROQ_SUBQUESTION_LLM", "llama-3.3-70b-versatile")
+    GOOGLE_MAX_RETRIES = _int_env("GOOGLE_MAX_RETRIES", 2)
     PDF_OCR_DPI = _int_env("PDF_OCR_DPI", 200)
 
     # Larger chunks = more context per retrieved node = better for structured PDFs
