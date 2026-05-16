@@ -26,7 +26,7 @@ import concurrent.futures
 import index_cache
 import model_cache
 from config import Config
-from utils import format_source_nodes, with_retry
+from utils import format_source_nodes, is_daily_quota_error, with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +84,7 @@ def _make_groq_llm():
         is_function_calling_model=False,
         temperature=0,
         max_tokens=1024,
+        max_retries=0,
     )
 
 
@@ -182,8 +183,10 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
     try:
         response = _run_async_in_thread(_make_engine(tools, llm).query, _formatted_query(query))
     except Exception as exc:
+        if not is_daily_quota_error(exc):
+            raise
         logger.info(
-            "[subquestion] Groq run failed (%s: %s); falling back to Gemini %s",
+            "[subquestion] Groq daily quota exhausted (%s: %s); falling back to Gemini %s",
             type(exc).__name__,
             str(exc)[:240],
             Config.GOOGLE_LLM,
