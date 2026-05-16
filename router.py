@@ -116,6 +116,37 @@ class QueryRouter:
             }
 
         # ── LLM classification for text-only queries ──────────────────────────
+        query_l = query.lower()
+        comparison_terms = (
+            "compare",
+            "comparison",
+            "difference",
+            "differences",
+            "similar",
+            "similarities",
+            "vs",
+            "versus",
+            "both",
+            "across",
+            "between",
+            "each",
+            "they",
+            "their",
+            "them",
+            "these",
+            "all documents",
+            "uploaded documents",
+        )
+        if len(texts) > 1 and any(term in query_l for term in comparison_terms):
+            return {
+                "label": "subquestion",
+                "approach": APPROACH_LABELS["subquestion"],
+                "reason": (
+                    "Rule detected a cross-document or plural question across "
+                    f"{len(texts)} docs â€” Sub-Question Engine."
+                ),
+            }
+
         label = self._llm_classify(query, len(texts))
 
         # Sub-Question Engine is for comparing MULTIPLE documents.

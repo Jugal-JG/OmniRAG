@@ -1,63 +1,59 @@
-"""
-Multi-Document Agent engine — mirrors multi_document_agents-v1.ipynb.
+"""Multi-document agent engine.
 
-Dual-LLM architecture:
-  • Top Agent   → Google Gemini 2.5 Flash (orchestration — picks which doc agents to call)
-  • Doc Agents  → Google Gemini 2.5 Flash (per-doc FunctionAgents with vector + summary tools)
-  • Answering   → Groq / Llama 4 Scout (fast synthesis from retrieved chunks)
-  • Embeddings  → Mistral (mistral-embed)
-
-Each uploaded file gets its own FunctionAgent (with vector + summary query engine tools).
-A top-level FunctionAgent reasons across all per-document agents.
+The engine still follows the notebook architecture: each uploaded file gets its
+own FunctionAgent, and a top-level FunctionAgent coordinates them. The document
+processing path fans out to the per-document agents concurrently so multi-file
+queries do not wait for one document to finish before starting the next.
 """
 
 import asyncio
-import io
-import contextlib
 import concurrent.futures
+import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 from llama_index.core import (
     Settings,
-    SimpleDirectoryReader,
     StorageContext,
     SummaryIndex,
     VectorStoreIndex,
     load_index_from_storage,
 )
-from llama_index.core.tools import QueryEngineTool, FunctionTool, ToolMetadata
+from llama_index.core.tools import FunctionTool, QueryEngineTool, ToolMetadata
 from llama_index.embeddings.mistralai import MistralAIEmbedding
-# Gemini Flash / Gemma orchestration and fallback synthesis
 from llama_index.llms.google_genai import GoogleGenAI
-from llama_index.llms.openai_like import OpenAILike           # Groq — fast answering from chunks
+from llama_index.llms.openai_like import OpenAILike
 
 import index_cache
 from config import Config
-from utils import with_retry
 
-# FIX: Import FunctionAgent from the correct module in >=0.12
+logger = logging.getLogger(__name__)
+
 try:
     from llama_index.core.agent.workflow import FunctionAgent
 except ImportError:
     from llama_index.core.agent import FunctionAgent
 
 
+@dataclass
+class DocumentAgent:
+    filename: str
+    agent: FunctionAgent
+
+
 def _run_async(coro):
-    """Run an async coroutine in a **dedicated thread** with a fresh event loop.
+    """Run a coroutine in a dedicated thread with a fresh event loop.
 
-    nest_asyncio's patched loop does not properly propagate asyncio.current_task()
-    on Python 3.14, so aiohttp's internal asyncio.timeout() raises
-    ``RuntimeError: Timeout should be used inside a task``.
-
-    By running in a brand-new thread via asyncio.run() we get a clean,
-    un-patched event loop where Tasks and timeouts work correctly.
+    Flask's request thread may already have loop state, and Python 3.14 is
+    stricter about asyncio timeouts needing a real Task context. A short-lived
+    worker thread plus asyncio.run gives each agent run clean loop ownership.
     """
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(asyncio.run, coro).result()
 
 
 def _is_retryable(exc: Exception) -> bool:
-    """Check if an exception is a transient error worth retrying."""
+    """Check if an exception is a transient provider error."""
     exc_str = str(exc).lower()
     exc_type = type(exc).__name__.lower()
     return (
@@ -83,62 +79,153 @@ def _is_rate_limit(exc: Exception) -> bool:
     )
 
 
-class FallbackQueryEngine:
-    """Query primary engine first, then fallback when provider quota is hit."""
+def _should_fallback(exc: Exception) -> bool:
+    return _is_rate_limit(exc) or _is_retryable(exc)
 
-    def __init__(self, primary_engine, fallback_engine, label: str):
+
+class FallbackQueryEngine:
+    """Query the primary answer engine, then fall back quickly on provider errors."""
+
+    def __init__(
+        self,
+        primary_engine,
+        fallback_engine,
+        label: str,
+        primary_model: str,
+        fallback_model: str,
+    ):
         self.primary_engine = primary_engine
         self.fallback_engine = fallback_engine
         self.label = label
+        self.primary_model = primary_model
+        self.fallback_model = fallback_model
 
     def query(self, query):
         try:
-            return self.primary_engine.query(query)
+            logger.info("[multi-doc] %s: primary query using %s", self.label, self.primary_model)
+            response = self.primary_engine.query(query)
+            logger.info("[multi-doc] %s: primary query succeeded", self.label)
+            return response
         except Exception as exc:
-            if not _is_rate_limit(exc):
+            if not _should_fallback(exc):
                 raise
-            print(
-                f"[multi-doc] {self.label}: Llama 4 Scout rate-limited; "
-                f"falling back to {Config.GOOGLE_LLM}"
+            logger.info(
+                "[multi-doc] %s: primary answer model failed (%s); falling back to %s",
+                self.label,
+                type(exc).__name__,
+                self.fallback_model,
             )
-            return self.fallback_engine.query(query)
+            response = self.fallback_engine.query(query)
+            logger.info("[multi-doc] %s: fallback query succeeded", self.label)
+            return response
 
     async def aquery(self, query):
         try:
-            return await self.primary_engine.aquery(query)
-        except Exception as exc:
-            if not _is_rate_limit(exc):
-                raise
-            print(
-                f"[multi-doc] {self.label}: Llama 4 Scout rate-limited; "
-                f"falling back to {Config.GOOGLE_LLM}"
+            logger.info(
+                "[multi-doc] %s: primary async query using %s",
+                self.label,
+                self.primary_model,
             )
-            return await self.fallback_engine.aquery(query)
+            response = await self.primary_engine.aquery(query)
+            logger.info("[multi-doc] %s: primary async query succeeded", self.label)
+            return response
+        except Exception as exc:
+            if not _should_fallback(exc):
+                raise
+            logger.info(
+                "[multi-doc] %s: primary answer model failed (%s); falling back to %s",
+                self.label,
+                type(exc).__name__,
+                self.fallback_model,
+            )
+            response = await self.fallback_engine.aquery(query)
+            logger.info("[multi-doc] %s: fallback async query succeeded", self.label)
+            return response
 
 
-async def _invoke_agent(agent: FunctionAgent, query: str, max_retries: int = 5) -> str:
-    """
-    Invoke a FunctionAgent with automatic retry on transient server errors.
+def _agent_result_text(result) -> str:
+    """Extract user-visible text from LlamaIndex agent outputs."""
+    response = getattr(result, "response", None)
+    if response is not None:
+        content = getattr(response, "content", None)
+        if content:
+            return str(content)
 
-    Google's API occasionally returns 500/502/503 or MALFORMED_RESPONSE
-    on the first attempts but succeeds on retry.
-    """
+    for attr in ("content", "text"):
+        value = getattr(result, attr, None)
+        if value:
+            return str(value)
+
+    return str(result)
+
+
+async def _invoke_agent(agent: FunctionAgent, query: str, max_retries: int | None = None) -> str:
+    """Invoke a FunctionAgent with a small retry budget for transient Google errors."""
+    attempts = max_retries or Config.GOOGLE_MAX_RETRIES
     last_exc = None
-    for attempt in range(max_retries):
+    for attempt in range(attempts):
         try:
             handler = agent.run(query)
             result = await handler
-            return str(result)
+            return _agent_result_text(result)
         except Exception as exc:
             last_exc = exc
-            if _is_retryable(exc) and attempt < max_retries - 1:
-                wait = min(2 ** (attempt + 1), 16)  # 2s, 4s, 8s, 16s, 16s
-                print(f"[retry] Transient error (attempt {attempt + 1}/{max_retries}), "
-                      f"retrying in {wait}s: {type(exc).__name__}: {str(exc)[:120]}")
+            if _is_retryable(exc) and attempt < attempts - 1:
+                wait = min(2 ** attempt, 4)
+                logger.info(
+                    "[retry] Transient agent error (attempt %s/%s), retrying in %ss: %s: %s",
+                    attempt + 1,
+                    attempts,
+                    wait,
+                    type(exc).__name__,
+                    str(exc)[:120],
+                )
                 await asyncio.sleep(wait)
                 continue
             raise
-    raise last_exc  # should not reach here, but safety net
+    raise last_exc
+
+
+def _cache_file_paths(fname: str, upload_dir: Path) -> list[str]:
+    return [str(upload_dir / fname)]
+
+
+def _load_or_build_indexes(fname: str, upload_dir: Path, embed_model):
+    file_paths = _cache_file_paths(fname, upload_dir)
+    vec_engine = f"multidoc_vec_{fname}"
+    sum_engine = f"multidoc_sum_{fname}"
+    vec_cache = index_cache.get_cache_path(file_paths, vec_engine)
+    sum_cache = index_cache.get_cache_path(file_paths, sum_engine)
+    is_pdf = fname.lower().endswith(".pdf")
+    docs = None
+
+    def get_docs():
+        nonlocal docs
+        if docs is None:
+            from doc_loader import load_documents
+
+            docs = load_documents(upload_dir / fname)
+        return docs
+
+    if index_cache.is_cache_usable(file_paths, vec_engine, require_meta=is_pdf):
+        vec_ctx = StorageContext.from_defaults(persist_dir=str(vec_cache))
+        vector_index = load_index_from_storage(vec_ctx)
+    else:
+        loaded_docs = get_docs()
+        vector_index = VectorStoreIndex.from_documents(loaded_docs, embed_model=embed_model)
+        vector_index.storage_context.persist(persist_dir=str(vec_cache))
+        index_cache.save_documents_meta(file_paths, vec_engine, loaded_docs)
+
+    if index_cache.is_cache_usable(file_paths, sum_engine, require_meta=is_pdf):
+        sum_ctx = StorageContext.from_defaults(persist_dir=str(sum_cache))
+        summary_index = load_index_from_storage(sum_ctx)
+    else:
+        loaded_docs = get_docs()
+        summary_index = SummaryIndex.from_documents(loaded_docs)
+        summary_index.storage_context.persist(persist_dir=str(sum_cache))
+        index_cache.save_documents_meta(file_paths, sum_engine, loaded_docs)
+
+    return vector_index, summary_index
 
 
 def _build_doc_agent(
@@ -148,44 +235,9 @@ def _build_doc_agent(
     answer_llm,
     fallback_answer_llm,
     embed_model,
-) -> FunctionAgent:
-    """Build a per-document FunctionAgent with vector + summary query engine tools.
-
-    - agent_llm: Gemini Flash — handles the FunctionAgent tool-calling decisions
-    - answer_llm: Groq / Llama 4 Scout — fast synthesis from retrieved chunks
-    - fallback_answer_llm: Gemma fallback when Groq is rate-limited
-    """
-    file_paths = [fname]
-    vec_cache = index_cache.get_cache_path(file_paths, f"multidoc_vec_{fname}")
-    sum_cache = index_cache.get_cache_path(file_paths, f"multidoc_sum_{fname}")
-
-    from doc_loader import load_documents
-    docs = load_documents(upload_dir / fname)
-
-    # ALWAYS rebuild indices for PDFs — prevents stale empty cache from
-    # poisoning results forever.  For non-PDFs, use cache normally.
-    is_pdf = fname.lower().endswith(".pdf")
-    vec_cached = index_cache.is_cached(file_paths, f"multidoc_vec_{fname}")
-    sum_cached = index_cache.is_cached(file_paths, f"multidoc_sum_{fname}")
-
-    if vec_cached and not is_pdf:
-        vec_ctx = StorageContext.from_defaults(persist_dir=str(vec_cache))
-        vector_index = load_index_from_storage(vec_ctx)
-    else:
-        if vec_cached:
-            print(f"[multi-doc] Rebuilding vector index for '{fname}'")
-        vector_index = VectorStoreIndex.from_documents(docs, embed_model=embed_model)
-        vector_index.storage_context.persist(persist_dir=str(vec_cache))
-
-    if sum_cached and not is_pdf:
-        sum_ctx = StorageContext.from_defaults(persist_dir=str(sum_cache))
-        summary_index = load_index_from_storage(sum_ctx)
-    else:
-        if sum_cached:
-            print(f"[multi-doc] Rebuilding summary index for '{fname}'")
-        summary_index = SummaryIndex.from_documents(docs)
-        summary_index.storage_context.persist(persist_dir=str(sum_cache))
-
+) -> DocumentAgent:
+    """Build a per-document FunctionAgent with vector and summary tools."""
+    vector_index, summary_index = _load_or_build_indexes(fname, upload_dir, embed_model)
     stem = Path(fname).stem.replace(" ", "_")
 
     primary_vector_engine = vector_index.as_query_engine(
@@ -205,13 +257,14 @@ def _build_doc_agent(
         llm=fallback_answer_llm,
     )
 
-    # Query engines use Groq first for speed, then Gemma if Groq hits quota.
     tools = [
         QueryEngineTool(
             query_engine=FallbackQueryEngine(
                 primary_engine=primary_vector_engine,
                 fallback_engine=fallback_vector_engine,
                 label=f"{fname} vector search",
+                primary_model=Config.GOOGLE_LLM,
+                fallback_model=Config.GROQ_LLM,
             ),
             metadata=ToolMetadata(
                 name=f"{stem}_vector",
@@ -223,6 +276,8 @@ def _build_doc_agent(
                 primary_engine=primary_summary_engine,
                 fallback_engine=fallback_summary_engine,
                 label=f"{fname} summary",
+                primary_model=Config.GOOGLE_LLM,
+                fallback_model=Config.GROQ_LLM,
             ),
             metadata=ToolMetadata(
                 name=f"{stem}_summary",
@@ -231,106 +286,208 @@ def _build_doc_agent(
         ),
     ]
 
-    # Doc agent uses Gemini Flash (agent_llm) for tool-calling decisions
-    return FunctionAgent(
+    agent = FunctionAgent(
+        name=stem,
+        description=f"Answers questions about {fname}.",
         tools=tools,
         llm=agent_llm,
-        system_prompt=f"You are a specialized agent for answering questions about '{fname}'.",
-        verbose=True,
+        system_prompt=(
+            f"You are a specialized document agent for '{fname}'. "
+            "Use the provided vector and summary tools before answering. "
+            "Answer only from this document. For cross-document comparison requests, "
+            "do not compare and do not refuse; summarize the facts, themes, and "
+            "details from this one document that a coordinator can compare later."
+        ),
+        verbose=False,
+        allow_parallel_tool_calls=True,
     )
+    return DocumentAgent(filename=fname, agent=agent)
 
 
-def _wrap_agent_as_tool(agent: FunctionAgent, name: str, description: str) -> FunctionTool:
-    """
-    Wrap an async FunctionAgent as a FunctionTool so the top-level agent
-    can call it. The notebook does the same with get_agent_tool_callable().
-    """
-    async def query_agent(query: str) -> str:
-        return await _invoke_agent(agent, query)
+async def _query_document_agents(doc_agents: list[DocumentAgent], query: str) -> list[dict]:
+    async def query_one(doc_agent: DocumentAgent) -> dict:
+        doc_query = (
+            "Single-document extraction task: use your tools to summarize this one "
+            "document's main topic, key facts, themes, and details relevant to the "
+            "user's eventual cross-document question. Do not compare against other "
+            "documents. Do not refuse because you only see one document.\n\n"
+            f"User's cross-document question: {query}"
+        )
+        try:
+            logger.info("[multi-doc] %s: agent started", doc_agent.filename)
+            answer = await _invoke_agent(doc_agent.agent, doc_query)
+            logger.info(
+                "[multi-doc] %s: agent completed answer_chars=%s",
+                doc_agent.filename,
+                len(answer),
+            )
+            return {"file": doc_agent.filename, "answer": answer, "error": None}
+        except Exception as exc:
+            logger.info(
+                "[multi-doc] %s: agent failed %s: %s",
+                doc_agent.filename,
+                type(exc).__name__,
+                str(exc)[:200],
+            )
+            return {
+                "file": doc_agent.filename,
+                "answer": "",
+                "error": f"{type(exc).__name__}: {str(exc)[:400]}",
+            }
 
+    return await asyncio.gather(*(query_one(doc_agent) for doc_agent in doc_agents))
+
+
+def _format_doc_results(results: list[dict]) -> str:
+    blocks = []
+    for result in results:
+        if result["error"]:
+            body = f"ERROR: {result['error']}"
+        else:
+            body = result["answer"]
+        blocks.append(f"Document: {result['file']}\n{body}")
+    return "\n\n---\n\n".join(blocks)
+
+
+def _build_parallel_document_tool(
+    doc_agents: list[DocumentAgent],
+    result_holder: dict,
+) -> FunctionTool:
+    """Create the top-agent tool that queries all document agents in parallel."""
+
+    async def query_all_documents(query: str) -> str:
+        results = await _query_document_agents(doc_agents, query)
+        result_holder["results"] = results
+        successful = [result for result in results if result["answer"]]
+        if not successful:
+            errors = "; ".join(f"{r['file']}: {r['error']}" for r in results)
+            return f"All document agents failed. {errors}"
+        return _format_doc_results(results)
+
+    names = ", ".join(doc_agent.filename for doc_agent in doc_agents)
     return FunctionTool.from_defaults(
-        async_fn=query_agent,
-        name=name,
-        description=description,
+        async_fn=query_all_documents,
+        name="parallel_document_agents",
+        description=(
+            "Queries all specialized document agents concurrently and returns "
+            f"their per-document answers. Documents: {names}"
+        ),
     )
 
 
-@with_retry
+async def _synthesize_from_results(llm, query: str, results: list[dict]) -> str:
+    successful = [result for result in results if result["answer"]]
+    if not successful:
+        errors = "; ".join(f"{r['file']}: {r['error']}" for r in results)
+        raise RuntimeError(f"All document agents failed. {errors}")
+
+    prompt = (
+        "Synthesize the following parallel document-agent results into a clear answer. "
+        "Use only these results. If they disagree, explain the difference. "
+        "If one document failed or lacks the answer, say so briefly.\n\n"
+        f"User question:\n{query}\n\n"
+        f"Document-agent results:\n{_format_doc_results(results)}\n\n"
+        "Final answer:"
+    )
+    try:
+        response = await llm.acomplete(prompt)
+        text = getattr(response, "text", str(response)).strip()
+        if text:
+            return text
+    except Exception as exc:
+        logger.info("[multi-doc] Direct synthesis failed, returning document results: %s", exc)
+
+    return _format_doc_results(successful)
+
+
 def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
-    # ── Dual-LLM setup ───────────────────────────────────────────────────
-    # Agent LLM (Gemma 4-31b): handles orchestration + doc agent tool-calling.
-    # Transient 500s are handled by _invoke_agent retry logic.
     agent_llm = GoogleGenAI(
-        api_key=Config.GOOGLE_API_KEY_GEMMA,
-        model=Config.GOOGLE_LLM,              # gemma-4-31b-it
-        max_retries=5,
+        api_key=Config.GOOGLE_API_KEY,
+        model=Config.GOOGLE_LLM,
+        max_retries=Config.GOOGLE_MAX_RETRIES,
     )
 
-    # Answering LLM (Groq / Llama 4 Scout): fast synthesis from retrieved chunks.
-    # No function calling needed — just reads chunks and produces answers.
-    answer_llm = OpenAILike(
-        api_key=Config.GROQ_API_KEY,
-        api_base="https://api.groq.com/openai/v1",
-        model=Config.GROQ_LLM,
-        is_chat_model=True,
-        is_function_calling_model=False,
-    )
+    answer_llm = agent_llm
+    fallback_answer_llm = None
+    if Config.GROQ_API_KEY:
+        fallback_answer_llm = OpenAILike(
+            api_key=Config.GROQ_API_KEY,
+            api_base="https://api.groq.com/openai/v1",
+            model=Config.GROQ_LLM,
+            is_chat_model=True,
+            is_function_calling_model=False,
+        )
 
     embed_model = MistralAIEmbedding(
-        api_key=Config.MISTRAL_API_KEY, model_name=Config.MISTRAL_EMBED_MODEL
+        api_key=Config.MISTRAL_API_KEY,
+        model_name=Config.MISTRAL_EMBED_MODEL,
     )
+    Settings.llm = agent_llm
     Settings.embed_model = embed_model
     Settings.chunk_size = Config.CHUNK_SIZE
 
-    all_tools = []
-    thinking_steps = []
+    thinking_steps = [
+        f"Agent model: {Config.GOOGLE_LLM}",
+        f"Answer model: {Config.GOOGLE_LLM}",
+        f"Fallback answer model: {Config.GROQ_LLM if fallback_answer_llm else 'none'}",
+        "Execution: per-document agents queried in parallel",
+    ]
 
+    doc_agents = []
     for fname in filenames:
-        thinking_steps.append(f"Building agent for: {fname}")
-        agent = _build_doc_agent(
-            fname,
-            upload_dir,
-            agent_llm,
-            answer_llm,
-            agent_llm,
-            embed_model,
-        )
-        stem = Path(fname).stem.replace(" ", "_")
-        all_tools.append(
-            _wrap_agent_as_tool(
-                agent=agent,
-                name=stem,
-                description=f"Agent specialized in the document: {fname}",
+        thinking_steps.append(f"Preparing agent for: {fname}")
+        doc_agents.append(
+            _build_doc_agent(
+                fname=fname,
+                upload_dir=upload_dir,
+                agent_llm=agent_llm,
+                answer_llm=answer_llm,
+                fallback_answer_llm=fallback_answer_llm or agent_llm,
+                embed_model=embed_model,
             )
         )
 
-    # Top-level agent — Gemini Flash orchestrates across per-doc agents
+    logger.info("[multi-doc] Agent LLM: %s (%s)", type(agent_llm).__name__, Config.GOOGLE_LLM)
+    logger.info(
+        "[multi-doc] Answer LLM: %s (%s)",
+        type(answer_llm).__name__,
+        Config.GOOGLE_LLM,
+    )
+    if fallback_answer_llm:
+        logger.info(
+            "[multi-doc] Fallback answer LLM: %s (%s)",
+            type(fallback_answer_llm).__name__,
+            Config.GROQ_LLM,
+        )
+    result_holder = {}
+    parallel_tool = _build_parallel_document_tool(doc_agents, result_holder)
     top_agent = FunctionAgent(
-        tools=all_tools,
+        name="multi_document_coordinator",
+        description="Coordinates specialized document agents for cross-document QA.",
+        tools=[parallel_tool],
         llm=agent_llm,
         system_prompt=(
             "You are a top-level assistant that coordinates specialized document agents. "
-            "You have access to tools — one for each uploaded document. "
-            "You MUST use these tools to answer the user's question. "
-            "NEVER say you don't have access. Always call the relevant document tool(s) first, "
-            "then synthesize the results into a comprehensive answer."
+            "You MUST call the parallel_document_agents tool before answering. "
+            "Use only the tool results to answer the user. If document agents disagree, "
+            "explain the difference. If a document failed or lacks the answer, say so briefly."
         ),
-        verbose=True,
+        verbose=False,
+        allow_parallel_tool_calls=True,
     )
 
-    # Debug logging
-    print(f"[multi-doc] Agent LLM: {type(agent_llm).__name__} ({Config.GOOGLE_LLM})")
-    print(f"[multi-doc] Answer LLM: {type(answer_llm).__name__} ({Config.GROQ_LLM})")
-    print(f"[multi-doc] Tools: {[t.metadata.name for t in all_tools]}")
+    logger.info("[multi-doc] Parallel agents: %s", [doc_agent.filename for doc_agent in doc_agents])
 
-    # Capture verbose output as thinking steps
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        answer = _run_async(_invoke_agent(top_agent, query))
+    answer = _run_async(_invoke_agent(top_agent, query))
+    if not answer.strip() and result_holder.get("results"):
+        logger.info("[multi-doc] Coordinator returned empty text; using direct synthesis fallback")
+        answer = _run_async(
+            _synthesize_from_results(agent_llm, query, result_holder["results"])
+        )
 
-    raw = buf.getvalue()
-    if raw.strip():
-        thinking_steps += [line for line in raw.splitlines() if line.strip()]
+    for result in result_holder.get("results", []):
+        status = "failed" if result["error"] else "answered"
+        thinking_steps.append(f"{result['file']}: {status}")
 
     return {
         "answer": answer,

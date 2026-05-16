@@ -144,6 +144,7 @@ async function uploadFiles(files) {
       uploadedFiles = data.files;
       renderFileList();
       if (data.errors?.length) showToast(`${data.errors[0]}`, "warning");
+      else if (data.warnings?.length) showToast(`${data.warnings[0]}`, "warning");
       else showToast(`${files.length} file(s) uploaded`, "success");
     }
   } catch (e) {

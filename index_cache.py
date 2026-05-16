@@ -35,6 +35,30 @@ def is_cached(file_paths: list[str], engine_name: str) -> bool:
     return d.exists() and (d / "docstore.json").exists()
 
 
+def document_cache_meta(docs) -> dict:
+    """Build validation metadata for cached indexes."""
+    text_chars = 0
+    for doc in docs or []:
+        try:
+            text = doc.get_content()
+        except Exception:
+            text = getattr(doc, "text", "") or ""
+        text_chars += len(text.strip())
+    return {"doc_count": len(docs or []), "text_chars": text_chars}
+
+
+def is_cache_usable(file_paths: list[str], engine_name: str, *, require_meta: bool = False) -> bool:
+    """Return True when a persisted index exists and its metadata is safe to reuse."""
+    if not is_cached(file_paths, engine_name):
+        return False
+
+    meta = load_index_meta(file_paths, engine_name)
+    if not meta:
+        return not require_meta
+
+    return meta.get("doc_count", 0) > 0 and meta.get("text_chars", 0) > 0
+
+
 def get_cache_path(file_paths: list[str], engine_name: str) -> Path:
     key = cache_key(file_paths, engine_name)
     d = cache_dir(key)
@@ -48,9 +72,17 @@ def save_index_meta(file_paths: list[str], engine_name: str, meta: dict):
     (d / "meta.json").write_text(json.dumps(meta))
 
 
+def save_documents_meta(file_paths: list[str], engine_name: str, docs):
+    """Save document validation metadata beside a persisted index."""
+    save_index_meta(file_paths, engine_name, document_cache_meta(docs))
+
+
 def load_index_meta(file_paths: list[str], engine_name: str) -> dict:
     d = cache_dir(cache_key(file_paths, engine_name))
     meta_file = d / "meta.json"
     if meta_file.exists():
-        return json.loads(meta_file.read_text())
+        try:
+            return json.loads(meta_file.read_text())
+        except json.JSONDecodeError:
+            return {}
     return {}
