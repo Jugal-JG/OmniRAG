@@ -11,7 +11,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, session
+from flask import Flask, jsonify, render_template, request, send_from_directory, session
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -27,7 +27,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder="frontend", static_folder="frontend/static")
 app.secret_key = Config.SECRET_KEY
 app.config["UPLOAD_FOLDER"] = Config.UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = Config.MAX_CONTENT_LENGTH
@@ -154,6 +154,11 @@ def _save_to_history(q: str, a: str, approach: str):
 # ──────────────────────────────────────────────────────────────────────────────
 # Routes
 # ──────────────────────────────────────────────────────────────────────────────
+
+
+@app.route("/config.js")
+def config_js():
+    return send_from_directory("frontend", "config.js", mimetype="application/javascript")
 
 
 @app.route("/")
