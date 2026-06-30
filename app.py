@@ -8,6 +8,7 @@
 
 import json
 import logging
+import logging
 import uuid
 from pathlib import Path
 
@@ -88,6 +89,23 @@ def _looks_like_scanned_pdf(file_path: Path) -> bool:
         return False
 
 
+def _looks_like_scanned_pdf(file_path: Path) -> bool:
+    if file_path.suffix.lower() != ".pdf":
+        return False
+
+    try:
+        import pypdf
+
+        reader = pypdf.PdfReader(str(file_path))
+        extracted = []
+        for page in reader.pages[: min(2, len(reader.pages))]:
+            extracted.append(page.extract_text() or "")
+        return len(" ".join(extracted).strip()) < 40
+    except Exception as exc:
+        logger.info("[upload] PDF scan check skipped for %s (%s)", file_path.name, exc)
+        return False
+
+
 def _history_file(upload_dir: Path) -> Path:
     return upload_dir / ".history.json"
 
@@ -141,6 +159,7 @@ def _make_standalone(query_text: str) -> str:
         return reformulated if reformulated else query_text
     except Exception as e:
         logger.info("[standalone-question] Groq reformulation failed (%s), using original query", e)
+        logger.info("[standalone-question] Groq reformulation failed (%s), using original query", e)
         return query_text
 
 
@@ -167,10 +186,15 @@ def index():
     if host in {"127.0.0.1", "localhost"}:
         return render_template("index.html", missing_keys=Config.missing_keys())
 
+    host = request.host.split(":", 1)[0]
+    if host in {"127.0.0.1", "localhost"}:
+        return render_template("index.html", missing_keys=Config.missing_keys())
+
     return jsonify(
         {
             "ok": True,
             "service": "OmniRAG backend",
+            "version": Config.APP_VERSION,
             "version": Config.APP_VERSION,
             "frontend": "Deploy app/frontend on Vercel and set OMNIRAG_API_BASE_URL to this Space URL.",
         }
@@ -183,6 +207,7 @@ def upload():
     uploaded = []
     errors = []
     warnings = []
+    warnings = []
 
     for f in request.files.getlist("files"):
         if not f or not f.filename:
@@ -193,7 +218,13 @@ def upload():
         filename = secure_filename(f.filename)
         file_path = upload_dir / filename
         f.save(str(file_path))
+        file_path = upload_dir / filename
+        f.save(str(file_path))
         uploaded.append(filename)
+        if _looks_like_scanned_pdf(file_path):
+            warnings.append(
+                f"{filename} looks image-based/scanned, so answers may take longer."
+            )
         if _looks_like_scanned_pdf(file_path):
             warnings.append(
                 f"{filename} looks image-based/scanned, so answers may take longer."
@@ -207,6 +238,9 @@ def upload():
     if uploaded:
         _save_history_file(upload_dir, [])
 
+    return jsonify(
+        {"success": True, "files": combined, "errors": errors, "warnings": warnings}
+    )
     return jsonify(
         {"success": True, "files": combined, "errors": errors, "warnings": warnings}
     )
@@ -275,6 +309,15 @@ def query():
         thinking_mode,
         query_text,
     )
+    logger.info(
+        "[query] files=%s text=%s image=%s multi_doc=%s thinking=%s query=%r",
+        len(filenames),
+        len(texts),
+        len(images),
+        multi_doc_mode,
+        thinking_mode,
+        query_text,
+    )
 
     standalone_query = _make_standalone(query_text)
     standalone_note = (
@@ -293,6 +336,12 @@ def query():
     label = routing["label"]
     if standalone_note:
         routing["reason"] += standalone_note
+    logger.info(
+        "[query] route=%s approach=%s reason=%s",
+        label,
+        routing["approach"],
+        routing["reason"],
+    )
     logger.info(
         "[query] route=%s approach=%s reason=%s",
         label,
@@ -339,6 +388,7 @@ def query():
             engine_fn = get_engine(label)
             effective_files = images if label == "multimodal" else filenames
             logger.info("[query] executing engine=%s files=%s", label, effective_files)
+            logger.info("[query] executing engine=%s files=%s", label, effective_files)
             result = engine_fn(standalone_query, effective_files, upload_dir)
 
     except Exception as exc:
@@ -356,6 +406,7 @@ def query():
         )
 
     answer = result.get("answer", "")
+    logger.info("[query] completed engine=%s answer_chars=%s", label, len(answer))
     logger.info("[query] completed engine=%s answer_chars=%s", label, len(answer))
     _save_to_history(query_text, answer[:600], routing["approach"])
 
@@ -380,12 +431,14 @@ def api_status():
             "groq": bool(Config.GROQ_API_KEY),
             "cohere": bool(Config.COHERE_API_KEY),
             "version": Config.APP_VERSION,
+            "version": Config.APP_VERSION,
         }
     )
 
 
 @app.route("/healthz")
 def healthz():
+    return jsonify({"ok": True, "version": Config.APP_VERSION})
     return jsonify({"ok": True, "version": Config.APP_VERSION})
 
 
