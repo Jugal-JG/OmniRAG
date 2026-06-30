@@ -1,8 +1,10 @@
 # Flask
-flask>=3.0.0
-flask-cors>=4.0.0
+# Pinned: flask-cors 5.x/6.x shipped breaking CORS-matching changes that drop
+# the Access-Control-Allow-Origin header on credentialed responses.
+flask>=3.0.0,<4.0.0
+flask-cors>=4.0.0,<5.0.0
 python-dotenv>=1.0.0
-gunicorn>=22.0.0
+gunicorn>=22.0.0,<23.0.0
 
 # LlamaIndex core + integrations
 # Keep this family pinned together; broad ranges make pip backtrack for a long time.

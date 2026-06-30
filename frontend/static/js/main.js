@@ -39,8 +39,11 @@ function apiFetch(path, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("X-Omnirag-Session-Id", getSessionId());
 
+  // No `credentials: "include"`: the session is tracked entirely via the
+  // X-Omnirag-Session-Id header above, so cross-site cookies aren't needed.
+  // Avoiding credentialed mode sidesteps fragile third-party-cookie handling
+  // and the stricter preflight rules that go with it.
   return fetch(apiUrl(path), {
-    credentials: "include",
     ...options,
     headers,
   });
