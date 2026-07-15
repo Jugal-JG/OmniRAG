@@ -26,9 +26,18 @@ jobs:
           HF_SPACE_REPO: ${{ vars.HF_SPACE_REPO }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          # Hugging Face rejects ordinary Git binary blobs. Keep README screenshots
+          # in GitHub, but omit them from the backend deployment repository.
+          mkdir -p /tmp/hf-space
+          rsync -a --delete --exclude='.git/' --exclude='demo-images/' ./ /tmp/hf-space/
+
+          cd /tmp/hf-space
+          git init --initial-branch=main
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --all
+          git commit -m "Deploy ${GITHUB_SHA} from GitHub"
           git remote add huggingface "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_REPO}.git"
           # GitHub is the source of truth. This replaces the Space's main branch
-          # with the exact GitHub main branch, then Hugging Face rebuilds the Space.
+          # with the deployable source, then Hugging Face rebuilds the Space.
           git push --force huggingface HEAD:main
