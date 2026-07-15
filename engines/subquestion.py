@@ -1,6 +1,6 @@
 """
 Sub-Question Query Engine — mirrors SubQuestion_Query_Engine.ipynb.
-LLM: Groq Llama 3.3  |  Embeddings: HuggingFace BAAI/bge-base-en-v1.5
+LLM: Groq Llama 3.3  |  Embeddings: HuggingFace BAAI/bge-m3 (was: microsoft/harrier-oss-v1-270m)
 Decomposes complex queries into per-document sub-questions then synthesizes.
 """
 
@@ -8,12 +8,7 @@ from pathlib import Path
 import logging
 import time
 
-from llama_index.core import (
-    Settings,
-    StorageContext,
-    VectorStoreIndex,
-    load_index_from_storage,
-)
+from llama_index.core import Settings
 from llama_index.core.query_engine import SubQuestionQueryEngine
 from llama_index.core.question_gen import LLMQuestionGenerator
 from llama_index.core.tools import QueryEngineTool, ToolMetadata
@@ -23,8 +18,8 @@ from llama_index.llms.openai_like import OpenAILike
 import asyncio
 import concurrent.futures
 
-import index_cache
 import model_cache
+import shared_vector_index
 from config import Config
 from utils import format_source_nodes, is_daily_quota_error, with_retry
 
@@ -109,22 +104,7 @@ def _run_async_in_thread(fn, *args, **kwargs):
 
 
 def _build_or_load_index(fname: str, upload_dir: Path, llm, embed_model=None):
-    file_paths = [str(upload_dir / fname)]
-    cache_path = index_cache.get_cache_path(file_paths, f"subquestion_{fname}")
-    is_pdf = fname.lower().endswith(".pdf")
-
-    if index_cache.is_cache_usable(file_paths, f"subquestion_{fname}", require_meta=is_pdf):
-        logger.info("[subquestion] Loading cached vector index for %s", fname)
-        ctx = StorageContext.from_defaults(persist_dir=str(cache_path))
-        return load_index_from_storage(ctx)
-
-    logger.info("[subquestion] Building vector index for %s", fname)
-    from doc_loader import load_documents
-    docs = load_documents(upload_dir / fname)
-    index = VectorStoreIndex.from_documents(docs)
-    index.storage_context.persist(persist_dir=str(cache_path))
-    index_cache.save_documents_meta(file_paths, f"subquestion_{fname}", docs)
-    return index
+    return shared_vector_index.build_or_load_file_index(fname, upload_dir, embed_model)
 
 
 def _make_tools(filenames: list[str], upload_dir: Path, llm, embed_model):
@@ -158,7 +138,8 @@ def _make_engine(tools, llm):
 
 
 def _formatted_query(query: str) -> str:
-    return f"{query.strip()}\n{ANSWER_FORMAT_INSTRUCTIONS}"
+    from answer_format import MATH_FORMAT_INSTRUCTIONS
+    return f"{query.strip()}\n{ANSWER_FORMAT_INSTRUCTIONS}\n{MATH_FORMAT_INSTRUCTIONS}"
 
 
 @with_retry
@@ -169,6 +150,7 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
     Settings.llm = llm
     Settings.embed_model = embed_model
     Settings.chunk_size = Config.CHUNK_SIZE
+    Settings.chunk_overlap = Config.CHUNK_OVERLAP
     logger.info(
         "[subquestion] LLM=OpenAILike/Groq (%s) use_async=True files=%s",
         Config.GROQ_SUBQUESTION_LLM,
@@ -183,10 +165,11 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
     try:
         response = _run_async_in_thread(_make_engine(tools, llm).query, _formatted_query(query))
     except Exception as exc:
-        if not is_daily_quota_error(exc):
+        from utils import is_rate_limit_error
+        if not is_rate_limit_error(exc):
             raise
         logger.info(
-            "[subquestion] Groq daily quota exhausted (%s: %s); falling back to Gemini %s",
+            "[subquestion] Groq rate limit / quota exhausted (%s: %s); falling back to Gemini %s",
             type(exc).__name__,
             str(exc)[:240],
             Config.GOOGLE_LLM,

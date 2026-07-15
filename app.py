@@ -8,7 +8,7 @@
 
 import json
 import logging
-import logging
+import threading
 import uuid
 from pathlib import Path
 
@@ -21,6 +21,7 @@ from engines import get_engine
 from engines.multimodal import run as multimodal_run
 from router import QueryRouter
 from utils import classify_files
+from answer_format import MATH_FORMAT_INSTRUCTIONS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -89,22 +90,6 @@ def _looks_like_scanned_pdf(file_path: Path) -> bool:
         return False
 
 
-def _looks_like_scanned_pdf(file_path: Path) -> bool:
-    if file_path.suffix.lower() != ".pdf":
-        return False
-
-    try:
-        import pypdf
-
-        reader = pypdf.PdfReader(str(file_path))
-        extracted = []
-        for page in reader.pages[: min(2, len(reader.pages))]:
-            extracted.append(page.extract_text() or "")
-        return len(" ".join(extracted).strip()) < 40
-    except Exception as exc:
-        logger.info("[upload] PDF scan check skipped for %s (%s)", file_path.name, exc)
-        return False
-
 
 def _history_file(upload_dir: Path) -> Path:
     return upload_dir / ".history.json"
@@ -156,9 +141,15 @@ def _make_standalone(query_text: str) -> str:
             temperature=0,
         )
         reformulated = resp.choices[0].message.content.strip()
+        # Strip <think>...</think> block if present (e.g. from Qwen reasoning model)
+        import re
+        if "<think>" in reformulated:
+            reformulated = re.sub(r"<think>.*?</think>", "", reformulated, flags=re.DOTALL).strip()
+            # If the closing tag was cut off due to max_tokens:
+            if "<think>" in reformulated:
+                reformulated = reformulated.split("<think>")[0].strip()
         return reformulated if reformulated else query_text
     except Exception as e:
-        logger.info("[standalone-question] Groq reformulation failed (%s), using original query", e)
         logger.info("[standalone-question] Groq reformulation failed (%s), using original query", e)
         return query_text
 
@@ -186,19 +177,40 @@ def index():
     if host in {"127.0.0.1", "localhost"}:
         return render_template("index.html", missing_keys=Config.missing_keys())
 
-    host = request.host.split(":", 1)[0]
-    if host in {"127.0.0.1", "localhost"}:
-        return render_template("index.html", missing_keys=Config.missing_keys())
-
     return jsonify(
         {
             "ok": True,
             "service": "OmniRAG backend",
             "version": Config.APP_VERSION,
-            "version": Config.APP_VERSION,
             "frontend": "Deploy app/frontend on Vercel and set OMNIRAG_API_BASE_URL to this Space URL.",
         }
     )
+
+
+
+def _preindex_basic_rag(filenames: list[str], upload_dir: Path):
+    """Pre-build the Basic RAG vector index in a background thread.
+
+    Called right after file upload so the index is ready before the user
+    types their first query.  Errors are logged but never surface to the
+    user — worst case the index is built lazily on first query as before.
+    """
+    try:
+        from engines.basic_rag import _build_or_load_index
+
+        import model_cache
+        from llama_index.core import Settings
+
+        embed_model = model_cache.get_hf_embed(Config.EMBED_MODEL)
+        Settings.embed_model = embed_model
+        Settings.chunk_size = Config.CHUNK_SIZE
+        Settings.chunk_overlap = Config.CHUNK_OVERLAP
+
+        logger.info("[preindex] Building Basic RAG index for %s", filenames)
+        _build_or_load_index(filenames, upload_dir)
+        logger.info("[preindex] Basic RAG index ready for %s", filenames)
+    except Exception as exc:
+        logger.warning("[preindex] Background indexing failed (%s), will retry on first query", exc)
 
 
 @app.route("/upload", methods=["POST"])
@@ -206,7 +218,6 @@ def upload():
     upload_dir = _session_dir()
     uploaded = []
     errors = []
-    warnings = []
     warnings = []
 
     for f in request.files.getlist("files"):
@@ -218,13 +229,7 @@ def upload():
         filename = secure_filename(f.filename)
         file_path = upload_dir / filename
         f.save(str(file_path))
-        file_path = upload_dir / filename
-        f.save(str(file_path))
         uploaded.append(filename)
-        if _looks_like_scanned_pdf(file_path):
-            warnings.append(
-                f"{filename} looks image-based/scanned, so answers may take longer."
-            )
         if _looks_like_scanned_pdf(file_path):
             warnings.append(
                 f"{filename} looks image-based/scanned, so answers may take longer."
@@ -238,9 +243,16 @@ def upload():
     if uploaded:
         _save_history_file(upload_dir, [])
 
-    return jsonify(
-        {"success": True, "files": combined, "errors": errors, "warnings": warnings}
-    )
+    # Pre-build the Basic RAG index in the background so the first query
+    # is instant.  We only index text files (not images).
+    text_files = [f for f in combined if not f.lower().endswith((".png", ".jpg", ".jpeg", ".gif"))]
+    if text_files:
+        threading.Thread(
+            target=_preindex_basic_rag,
+            args=(text_files, upload_dir),
+            daemon=True,
+        ).start()
+
     return jsonify(
         {"success": True, "files": combined, "errors": errors, "warnings": warnings}
     )
@@ -309,15 +321,6 @@ def query():
         thinking_mode,
         query_text,
     )
-    logger.info(
-        "[query] files=%s text=%s image=%s multi_doc=%s thinking=%s query=%r",
-        len(filenames),
-        len(texts),
-        len(images),
-        multi_doc_mode,
-        thinking_mode,
-        query_text,
-    )
 
     standalone_query = _make_standalone(query_text)
     standalone_note = (
@@ -342,23 +345,23 @@ def query():
         routing["approach"],
         routing["reason"],
     )
-    logger.info(
-        "[query] route=%s approach=%s reason=%s",
-        label,
-        routing["approach"],
-        routing["reason"],
-    )
 
     # ── Execute ────────────────────────────────────────────────────────────────
     try:
         if label == "merged":
             mm_result = multimodal_run(standalone_query, images, upload_dir)
 
-            text_label = router.route(
+            text_routing = router.route(
                 query=query_text, filenames=texts, multi_doc_mode=False, thinking_mode=False
-            )["label"]
+            )
+            text_label = text_routing["label"]
             text_engine = get_engine(text_label)
             text_result = text_engine(standalone_query, texts, upload_dir)
+
+            routing["reason"] = (
+                f"{routing['reason']} Images routed to Multimodal engine. "
+                f"Text routed to {text_routing['approach']} ({text_routing['reason']})."
+            )
 
             from groq import Groq
 
@@ -367,7 +370,9 @@ def query():
                 f"Image analysis result:\n{mm_result['answer']}\n\n"
                 f"Text document analysis result:\n{text_result['answer']}\n\n"
                 f"Original question: {query_text}\n\n"
-                "Synthesize both analyses into one comprehensive, clear answer."
+                "Synthesize both analyses into one comprehensive, clear answer. "
+                "Do not output any internal reasoning, scratchpad, or markdown tags like <think>."
+                + MATH_FORMAT_INSTRUCTIONS
             )
             merge_resp = client.chat.completions.create(
                 model=Config.GROQ_LLM,
@@ -376,18 +381,24 @@ def query():
             )
             merged_answer = merge_resp.choices[0].message.content
 
+            # Strip <think>...</think> block if present
+            import re
+            if "<think>" in merged_answer:
+                merged_answer = re.sub(r"<think>.*?</think>", "", merged_answer, flags=re.DOTALL).strip()
+                if "<think>" in merged_answer:
+                    merged_answer = merged_answer.split("<think>")[0].strip()
+
             result = {
                 "answer": merged_answer,
                 "sources": text_result.get("sources", []),
                 "thinking_steps": [
-                    f"[Image analysis] {mm_result['answer'][:300]}…",
-                    f"[Text analysis ({text_label})] {text_result['answer'][:300]}…",
+                    f"[Image analysis] {mm_result['answer']}",
+                    f"[Text analysis ({text_label})] {text_result['answer']}",
                 ],
             }
         else:
             engine_fn = get_engine(label)
             effective_files = images if label == "multimodal" else filenames
-            logger.info("[query] executing engine=%s files=%s", label, effective_files)
             logger.info("[query] executing engine=%s files=%s", label, effective_files)
             result = engine_fn(standalone_query, effective_files, upload_dir)
 
@@ -406,7 +417,6 @@ def query():
         )
 
     answer = result.get("answer", "")
-    logger.info("[query] completed engine=%s answer_chars=%s", label, len(answer))
     logger.info("[query] completed engine=%s answer_chars=%s", label, len(answer))
     _save_to_history(query_text, answer[:600], routing["approach"])
 
@@ -431,7 +441,6 @@ def api_status():
             "groq": bool(Config.GROQ_API_KEY),
             "cohere": bool(Config.COHERE_API_KEY),
             "version": Config.APP_VERSION,
-            "version": Config.APP_VERSION,
         }
     )
 
@@ -439,8 +448,14 @@ def api_status():
 @app.route("/healthz")
 def healthz():
     return jsonify({"ok": True, "version": Config.APP_VERSION})
-    return jsonify({"ok": True, "version": Config.APP_VERSION})
 
 
 if __name__ == "__main__":
+    # Pre-load the embedding model into RAM during server boot so the
+    # first user query does not have to wait 40-70s for model loading.
+    import model_cache
+    logger.info("[startup] Pre-loading embedding model: %s", Config.EMBED_MODEL)
+    model_cache.get_hf_embed(Config.EMBED_MODEL)
+    logger.info("[startup] Embedding model ready.")
+
     app.run(debug=True, port=5000, use_reloader=False)

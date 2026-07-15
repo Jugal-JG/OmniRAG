@@ -354,6 +354,9 @@ function appendResponse(data) {
     </div>`;
 
   chatContainer.appendChild(div);
+  // Render any LaTeX math blocks in the answer after the element is in the DOM
+  const answerEl = div.querySelector(".answer-content");
+  if (answerEl) renderMath(answerEl);
   scrollToBottom();
 }
 
@@ -471,9 +474,59 @@ function escapeHtml(str) {
 
 function renderMarkdown(text) {
   try {
-    return marked.parse(text);
+    // ── Step 1: Lift all math blocks out before marked sees them ───────────
+    // marked.parse() aggressively processes $ symbols and backslashes,
+    // mangling LaTeX content between $...$ delimiters. We stash each math
+    // expression as a unique placeholder, run marked on the safe remainder,
+    // then splice the original LaTeX back in so KaTeX finds it untouched.
+    const mathBlocks = [];
+
+    function stash(match) {
+      const idx = mathBlocks.length;
+      mathBlocks.push(match);
+      // Placeholder must survive marked (no special chars, unique per block).
+      return `\x02MATH${idx}\x03`;
+    }
+
+    // Order matters: extract $$...$$ display math before $...$ inline math.
+    let safe = text
+      .replace(/\$\$([\s\S]*?)\$\$/g, stash)           // $$...$$ block
+      .replace(/\$([^\$\n][^\$]*?)\$/g, stash)          // $...$ inline (no newlines)
+      .replace(/\\\[([\s\S]*?)\\\]/g, stash)             // \[...\] block
+      .replace(/\\\(([\s\S]*?)\\\)/g, stash);            // \(...\) inline
+
+    // ── Step 2: Run marked on the math-free text ───────────────────────────
+    let html = marked.parse(safe);
+
+    // ── Step 3: Restore original math expressions ──────────────────────────
+    html = html.replace(/\x02MATH(\d+)\x03/g, (_, i) => mathBlocks[+i]);
+
+    return html;
   } catch {
     return `<p>${escapeHtml(text)}</p>`;
+  }
+}
+
+/**
+ * Run KaTeX over an already-inserted DOM element to render any LaTeX math.
+ * Supports both $...$ inline and $$...$$ display delimiters, as well as
+ * \(...\) and \[...\] which LLMs sometimes emit for academic papers.
+ */
+function renderMath(el) {
+  if (typeof renderMathInElement !== "function") return;
+  try {
+    renderMathInElement(el, {
+      delimiters: [
+        { left: "$$",  right: "$$",  display: true  },
+        { left: "$",   right: "$",   display: false },
+        { left: "\\[", right: "\\]", display: true  },
+        { left: "\\(", right: "\\)", display: false },
+      ],
+      throwOnError: false,   // never crash the page on bad LaTeX
+      strict: false,
+    });
+  } catch (e) {
+    console.warn("[KaTeX] render failed:", e);
   }
 }
 

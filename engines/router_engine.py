@@ -12,7 +12,6 @@ from llama_index.core import (
     Settings,
     StorageContext,
     SummaryIndex,
-    VectorStoreIndex,
     load_index_from_storage,
 )
 from llama_index.core.query_engine import RouterQueryEngine
@@ -23,6 +22,7 @@ from llama_index.llms.openai_like import OpenAILike
 
 import index_cache
 import model_cache
+import shared_vector_index
 from config import Config
 from utils import format_source_nodes, is_daily_quota_error, with_retry
 
@@ -64,12 +64,12 @@ def _make_gemini_llm():
 
 def _build_or_load_indexes(file_paths: list[str], upload_dir: Path):
     cache_file_paths = [str(upload_dir / f) for f in file_paths]
-    vec_cache = index_cache.get_cache_path(cache_file_paths, "router_engine_vec")
     sum_cache = index_cache.get_cache_path(cache_file_paths, "router_engine_sum")
 
     embed_model = model_cache.get_hf_embed(Config.EMBED_MODEL)
     Settings.embed_model = embed_model
     Settings.chunk_size = Config.CHUNK_SIZE
+    Settings.chunk_overlap = Config.CHUNK_OVERLAP
 
     has_pdf = any(f.lower().endswith(".pdf") for f in file_paths)
     all_docs = None
@@ -84,18 +84,9 @@ def _build_or_load_indexes(file_paths: list[str], upload_dir: Path):
                 all_docs.extend(load_documents(upload_dir / f))
         return all_docs
 
-    if index_cache.is_cache_usable(
-        cache_file_paths, "router_engine_vec", require_meta=has_pdf
-    ):
-        logger.info("[router_engine] Loading cached vector index for %s", file_paths)
-        vec_ctx = StorageContext.from_defaults(persist_dir=str(vec_cache))
-        vector_index = load_index_from_storage(vec_ctx)
-    else:
-        logger.info("[router_engine] Building vector index for %s", file_paths)
-        docs = get_docs()
-        vector_index = VectorStoreIndex.from_documents(docs)
-        vector_index.storage_context.persist(persist_dir=str(vec_cache))
-        index_cache.save_documents_meta(cache_file_paths, "router_engine_vec", docs)
+    vector_index = shared_vector_index.build_or_load_indexes(
+        file_paths, upload_dir, embed_model
+    )
 
     if index_cache.is_cache_usable(
         cache_file_paths, "router_engine_sum", require_meta=has_pdf
@@ -114,9 +105,12 @@ def _build_or_load_indexes(file_paths: list[str], upload_dir: Path):
 
 
 def _make_router(vector_index, summary_index, llm):
+    import retrieval
+
     Settings.llm = llm
     vector_tool = QueryEngineTool.from_defaults(
-        query_engine=vector_index.as_query_engine(
+        query_engine=retrieval.make_query_engine(
+            vector_index,
             similarity_top_k=Config.SIMILARITY_TOP_K,
             llm=llm,
         ),
@@ -137,7 +131,8 @@ def _make_router(vector_index, summary_index, llm):
 
 
 def _formatted_query(query: str) -> str:
-    return f"{query.strip()}\n{ANSWER_FORMAT_INSTRUCTIONS}"
+    from answer_format import MATH_FORMAT_INSTRUCTIONS
+    return f"{query.strip()}\n{ANSWER_FORMAT_INSTRUCTIONS}\n{MATH_FORMAT_INSTRUCTIONS}"
 
 
 @with_retry
@@ -154,10 +149,11 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
     try:
         response = _make_router(vector_index, summary_index, llm).query(_formatted_query(query))
     except Exception as exc:
-        if not is_daily_quota_error(exc):
+        from utils import is_rate_limit_error
+        if not is_rate_limit_error(exc):
             raise
         logger.info(
-            "[router_engine] Groq daily quota exhausted (%s: %s); falling back to Gemini %s",
+            "[router_engine] Groq rate limit / quota exhausted (%s: %s); falling back to Gemini %s",
             type(exc).__name__,
             str(exc)[:240],
             Config.GOOGLE_LLM,

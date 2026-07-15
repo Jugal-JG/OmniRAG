@@ -1,5 +1,5 @@
 """
-Smart query router: rule-based first, then Groq/Llama-4-scout for ambiguous queries.
+Smart query router: rule-based first, then Groq/Llama-3.1-8b for ambiguous queries.
 Returns the chosen approach name + human-readable reasoning.
 """
 
@@ -44,12 +44,17 @@ class QueryRouter:
             self._client = Groq(api_key=Config.GROQ_API_KEY)
         return self._client
 
-    def _llm_classify(self, query: str, num_text_files: int) -> str:
-        """Call Groq to classify the query. Falls back to basic_rag on any error."""
+    def _llm_classify(self, query: str, num_text_files: int) -> tuple[str, str | None]:
+        """Call Groq to classify the query. Falls back to basic_rag on any error.
+
+        Returns (label, error_msg). error_msg is None on success, the exception
+        string on failure — so callers can show an honest reason instead of
+        claiming the model 'classified' something it never saw.
+        """
         try:
             user_msg = f"Number of uploaded text documents: {num_text_files}\nQuery: {query}"
             resp = self._groq().chat.completions.create(
-                model=Config.GROQ_LLM,
+                model=Config.GROQ_ROUTER_LLM,
                 messages=[
                     {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
                     {"role": "user", "content": user_msg},
@@ -60,10 +65,11 @@ class QueryRouter:
             label = resp.choices[0].message.content.strip().lower()
             if label not in ("basic_rag", "subquestion", "router_engine"):
                 label = "basic_rag"
-            return label
+            return label, None
         except Exception as e:
-            print(f"[Router] LLM classification failed ({e}), defaulting to basic_rag")
-            return "basic_rag"
+            err = str(e)
+            print(f"[Router] LLM classification failed ({err}), defaulting to basic_rag")
+            return "basic_rag", err
 
     def route(
         self,
@@ -147,7 +153,7 @@ class QueryRouter:
                 ),
             }
 
-        label = self._llm_classify(query, len(texts))
+        label, classify_err = self._llm_classify(query, len(texts))
 
         # Sub-Question Engine is for comparing MULTIPLE documents.
         # With only 1 text file it decomposes unnecessarily and misses direct facts —
@@ -163,13 +169,23 @@ class QueryRouter:
                 ),
             }
 
-        reasons = {
-            "basic_rag": "Groq/Llama-4-scout classified this as a narrow factual lookup → Basic RAG.",
-            "subquestion": f"Groq/Llama-4-scout detected multi-part or cross-document comparison across {len(texts)} docs → Sub-Question Engine.",
-            "router_engine": "Groq/Llama-4-scout detected summarization or broad overview query → Router Query Engine.",
-        }
+        if classify_err:
+            # LLM call failed — be honest about what happened instead of claiming
+            # the model made a classification decision it never actually made.
+            reason = (
+                f"Router LLM ({Config.GROQ_ROUTER_LLM}) failed — defaulting to Basic RAG. "
+                f"Error: {classify_err}"
+            )
+        else:
+            reasons = {
+                "basic_rag": f"Groq/{Config.GROQ_ROUTER_LLM} classified this as a narrow factual lookup → Basic RAG.",
+                "subquestion": f"Groq/{Config.GROQ_ROUTER_LLM} detected multi-part or cross-document comparison across {len(texts)} docs → Sub-Question Engine.",
+                "router_engine": f"Groq/{Config.GROQ_ROUTER_LLM} detected summarization or broad overview query → Router Query Engine.",
+            }
+            reason = reasons[label]
+
         return {
             "label": label,
             "approach": APPROACH_LABELS[label],
-            "reason": reasons[label],
+            "reason": reason,
         }

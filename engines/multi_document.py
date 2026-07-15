@@ -16,15 +16,16 @@ from llama_index.core import (
     Settings,
     StorageContext,
     SummaryIndex,
-    VectorStoreIndex,
     load_index_from_storage,
 )
 from llama_index.core.tools import FunctionTool, QueryEngineTool, ToolMetadata
-from llama_index.embeddings.mistralai import MistralAIEmbedding
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.llms.openai_like import OpenAILike
 
 import index_cache
+import model_cache
+import shared_vector_index
+from answer_format import MATH_FORMAT_INSTRUCTIONS
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -192,9 +193,7 @@ def _cache_file_paths(fname: str, upload_dir: Path) -> list[str]:
 
 def _load_or_build_indexes(fname: str, upload_dir: Path, embed_model):
     file_paths = _cache_file_paths(fname, upload_dir)
-    vec_engine = f"multidoc_vec_{fname}"
     sum_engine = f"multidoc_sum_{fname}"
-    vec_cache = index_cache.get_cache_path(file_paths, vec_engine)
     sum_cache = index_cache.get_cache_path(file_paths, sum_engine)
     is_pdf = fname.lower().endswith(".pdf")
     docs = None
@@ -207,14 +206,9 @@ def _load_or_build_indexes(fname: str, upload_dir: Path, embed_model):
             docs = load_documents(upload_dir / fname)
         return docs
 
-    if index_cache.is_cache_usable(file_paths, vec_engine, require_meta=is_pdf):
-        vec_ctx = StorageContext.from_defaults(persist_dir=str(vec_cache))
-        vector_index = load_index_from_storage(vec_ctx)
-    else:
-        loaded_docs = get_docs()
-        vector_index = VectorStoreIndex.from_documents(loaded_docs, embed_model=embed_model)
-        vector_index.storage_context.persist(persist_dir=str(vec_cache))
-        index_cache.save_documents_meta(file_paths, vec_engine, loaded_docs)
+    vector_index = shared_vector_index.build_or_load_file_index(
+        fname, upload_dir, embed_model
+    )
 
     if index_cache.is_cache_usable(file_paths, sum_engine, require_meta=is_pdf):
         sum_ctx = StorageContext.from_defaults(persist_dir=str(sum_cache))
@@ -297,6 +291,7 @@ def _build_doc_agent(
             "Answer only from this document. For cross-document comparison requests, "
             "do not compare and do not refuse; summarize the facts, themes, and "
             "details from this one document that a coordinator can compare later."
+            + MATH_FORMAT_INSTRUCTIONS
         ),
         verbose=False,
         allow_parallel_tool_calls=True,
@@ -311,7 +306,7 @@ async def _query_document_agents(doc_agents: list[DocumentAgent], query: str) ->
             "document's main topic, key facts, themes, and details relevant to the "
             "user's eventual cross-document question. Do not compare against other "
             "documents. Do not refuse because you only see one document.\n\n"
-            f"User's cross-document question: {query}"
+            f"User's cross-document question: {query}\n{MATH_FORMAT_INSTRUCTIONS}"
         )
         try:
             logger.info("[multi-doc] %s: agent started", doc_agent.filename)
@@ -388,6 +383,7 @@ async def _synthesize_from_results(llm, query: str, results: list[dict]) -> str:
         f"User question:\n{query}\n\n"
         f"Document-agent results:\n{_format_doc_results(results)}\n\n"
         "Final answer:"
+        + MATH_FORMAT_INSTRUCTIONS
     )
     try:
         response = await llm.acomplete(prompt)
@@ -418,13 +414,11 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
             is_function_calling_model=False,
         )
 
-    embed_model = MistralAIEmbedding(
-        api_key=Config.MISTRAL_API_KEY,
-        model_name=Config.MISTRAL_EMBED_MODEL,
-    )
+    embed_model = model_cache.get_hf_embed(Config.EMBED_MODEL)
     Settings.llm = agent_llm
     Settings.embed_model = embed_model
     Settings.chunk_size = Config.CHUNK_SIZE
+    Settings.chunk_overlap = Config.CHUNK_OVERLAP
 
     thinking_steps = [
         f"Agent model: {Config.GOOGLE_LLM}",
@@ -471,6 +465,7 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
             "You MUST call the parallel_document_agents tool before answering. "
             "Use only the tool results to answer the user. If document agents disagree, "
             "explain the difference. If a document failed or lacks the answer, say so briefly."
+            + MATH_FORMAT_INSTRUCTIONS
         ),
         verbose=False,
         allow_parallel_tool_calls=True,

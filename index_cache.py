@@ -3,9 +3,29 @@
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 
 from config import Config
+
+# ── Build locks ───────────────────────────────────────────────────────────────
+# One lock per cache key so that when two threads want the SAME index (e.g. the
+# background pre-indexer started on upload AND the first user query), only one
+# actually embeds the documents. The other blocks on the lock, then finds the
+# index already persisted and loads it from disk instead of re-embedding.
+_build_locks: dict[str, threading.Lock] = {}
+_build_locks_guard = threading.Lock()
+
+
+def build_lock(file_paths: list[str], engine_name: str) -> threading.Lock:
+    """Return the process-wide lock guarding builds for this cache key."""
+    key = cache_key(file_paths, engine_name)
+    with _build_locks_guard:
+        lock = _build_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _build_locks[key] = lock
+        return lock
 
 
 def _file_hash(file_paths: list[str]) -> str:
@@ -21,9 +41,11 @@ def _file_hash(file_paths: list[str]) -> str:
 
 
 def cache_key(file_paths: list[str], engine_name: str) -> str:
-    # Include chunk_size in the key so changing it auto-invalidates old indexes.
+    # Include chunk_size and embed model in the key so changing either
+    # auto-invalidates old indexes (avoids stale vector mismatches).
     chunk_tag = f"c{Config.CHUNK_SIZE}"
-    return f"{engine_name}_{chunk_tag}_{_file_hash(file_paths)}"
+    model_tag = Config.EMBED_MODEL.replace("/", "_")
+    return f"{engine_name}_{chunk_tag}_{model_tag}_{_file_hash(file_paths)}"
 
 
 def cache_dir(key: str) -> Path:

@@ -1,6 +1,6 @@
 """
 Multi-Modal engine — mirrors Multi_Modal.ipynb.
-LLM: Groq / Llama-4-scout-17b (vision)
+LLM: Groq / Qwen3.6-27b (vision)
 Handles image analysis; returns structured description.
 """
 
@@ -11,6 +11,7 @@ from groq import Groq
 
 from config import Config
 from utils import with_retry
+from answer_format import MATH_FORMAT_INSTRUCTIONS
 
 
 def _encode_image(image_path: Path) -> tuple[str, str]:
@@ -18,7 +19,7 @@ def _encode_image(image_path: Path) -> tuple[str, str]:
     suffix = image_path.suffix.lower()
     mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif"}
     mime = mime_map.get(suffix, "image/png")
-    data = base64.standard_b64encode(image_path.read_bytes()).decode("utf-8")
+    data = base64.b64encode(image_path.read_bytes()).decode("ascii").strip()
     return data, mime
 
 
@@ -26,7 +27,7 @@ def _encode_image(image_path: Path) -> tuple[str, str]:
 def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
     client = Groq(api_key=Config.GROQ_API_KEY)
 
-    content = [{"type": "text", "text": query}]
+    content = [{"type": "text", "text": query + MATH_FORMAT_INSTRUCTIONS}]
 
     for fname in filenames:
         img_path = upload_dir / fname
@@ -41,9 +42,9 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
         )
 
     response = client.chat.completions.create(
-        model=Config.GROQ_LLM,
+        model=Config.GROQ_VISION_LLM,
         messages=[{"role": "user", "content": content}],
-        max_tokens=1024,
+        max_tokens=4096,
     )
 
     answer = response.choices[0].message.content

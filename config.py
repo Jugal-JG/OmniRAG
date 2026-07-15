@@ -12,10 +12,11 @@ def _int_env(name: str, default: int) -> int:
 
 
 class Config:
-    APP_VERSION = os.getenv("APP_VERSION", "1.5")
+    APP_VERSION = os.getenv("APP_VERSION", "2")
 
     MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
-    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")          # Gemini models
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")          # Gemini models (primary)
+    GOOGLE_API_KEY2 = os.getenv("GOOGLE_API_KEY2", "")        # ReAct fallback key (second account)
     GOOGLE_API_KEY_GEMMA = os.getenv("GOOGLE_API_KEY_GEMMA", "")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
@@ -37,7 +38,17 @@ class Config:
     ]
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB
 
-    EMBED_MODEL = "BAAI/bge-base-en-v1.5"
+    # [ORIGINAL] harrier-oss-v1-270m is a 270M-param *decoder* embedder — accurate but
+    # heavy on CPU (seconds per 1024-token chunk). For faster CPU indexing set
+    # EMBED_MODEL to a small sentence-transformer, e.g. BAAI/bge-small-en-v1.5
+    # (33M) or sentence-transformers/all-MiniLM-L6-v2 (22M). The cache key
+    # includes the model name, so switching auto-rebuilds without stale vectors.
+    # EMBED_MODEL = os.getenv("EMBED_MODEL", "microsoft/harrier-oss-v1-270m")
+
+    # [TEST] BAAI/bge-m3 — 567M-param encoder with native dense + sparse
+    # retrieval. Supports up to 8192 tokens. Trained on a large multilingual
+    # corpus including scientific text. Faster than harrier on CPU.
+    EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
     MISTRAL_EMBED_MODEL = "mistral-embed"
 
     # LLM model names. Env overrides let demos switch models without code edits.
@@ -45,15 +56,24 @@ class Config:
     GOOGLE_LLM = os.getenv("GOOGLE_LLM", "gemini-3.1-flash-lite-preview")
     GOOGLE_GEMMA_LLM = os.getenv("GOOGLE_GEMMA_LLM", "gemma-4-26b-a4b-it")
     GEMINI_LLM = os.getenv("GEMINI_LLM", "gemini-2.5-flash")
-    GROQ_LLM = os.getenv("GROQ_LLM", "meta-llama/llama-4-scout-17b-16e-instruct")
+    # ReAct primary model — uses gemini-2.5-flash on GOOGLE_API_KEY.
+    # If that fails (429/quota), falls back to gemini-3.1-flash-lite-preview
+    # on GOOGLE_API_KEY2 (second Google account).
+    REACT_PRIMARY_LLM = os.getenv("REACT_PRIMARY_LLM", "gemini-2.5-flash")
+    GROQ_LLM = os.getenv("GROQ_LLM", "qwen/qwen3.6-27b")
+    GROQ_VISION_LLM = os.getenv("GROQ_VISION_LLM", "qwen/qwen3.6-27b")
+    GROQ_ROUTER_LLM = os.getenv("GROQ_ROUTER_LLM", "llama-3.1-8b-instant")
     GROQ_SUBQUESTION_LLM = os.getenv("GROQ_SUBQUESTION_LLM", "llama-3.3-70b-versatile")
     GOOGLE_MAX_RETRIES = _int_env("GOOGLE_MAX_RETRIES", 2)
     PDF_OCR_DPI = _int_env("PDF_OCR_DPI", 200)
 
-    # Larger chunks = more context per retrieved node = better for structured PDFs
-    # (tenant name tables, lease summary blocks all fit in one 1024-token chunk)
+    # BAAI/bge-m3 supports up to 8,192 tokens — the full chunk is embedded
+    # without truncation at the current CHUNK_SIZE of 1024.
     CHUNK_SIZE = 1024
-    # Retrieve more nodes so the first-page summary table is almost always included
+    # Overlap ensures formulas and sentences that span chunk boundaries
+    # are captured in both neighbouring chunks.
+    CHUNK_OVERLAP = 128
+    # Retrieve the top-k most relevant chunks for the LLM to read.
     SIMILARITY_TOP_K = 8
 
     @classmethod
