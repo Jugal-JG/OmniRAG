@@ -15,8 +15,6 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # Do not run a deployment with missing credentials (for example, forks).
-    if: ${{ vars.HF_SPACE_REPO != '' && secrets.HF_TOKEN != '' }}
     steps:
       - name: Check out the GitHub source branch
         uses: actions/checkout@v4
