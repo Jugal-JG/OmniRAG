@@ -11,6 +11,10 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    return os.getenv(name, str(default)).lower() in {"1", "true", "yes", "on"}
+
+
 class Config:
     APP_VERSION = os.getenv("APP_VERSION", "2")
 
@@ -53,6 +57,7 @@ class Config:
 
     # LLM model names. Env overrides let demos switch models without code edits.
     MISTRAL_LLM = os.getenv("MISTRAL_LLM", "mistral-large-latest")
+    ANSWER_MAX_TOKENS = _int_env("ANSWER_MAX_TOKENS", 4096)
     GOOGLE_LLM = os.getenv("GOOGLE_LLM", "gemini-3.1-flash-lite-preview")
     GOOGLE_GEMMA_LLM = os.getenv("GOOGLE_GEMMA_LLM", "gemma-4-26b-a4b-it")
     GEMINI_LLM = os.getenv("GEMINI_LLM", "gemini-2.5-flash")
@@ -62,17 +67,21 @@ class Config:
     REACT_PRIMARY_LLM = os.getenv("REACT_PRIMARY_LLM", "gemini-2.5-flash")
     GROQ_LLM = os.getenv("GROQ_LLM", "qwen/qwen3.6-27b")
     GROQ_VISION_LLM = os.getenv("GROQ_VISION_LLM", "qwen/qwen3.6-27b")
-    GROQ_ROUTER_LLM = os.getenv("GROQ_ROUTER_LLM", "llama-3.1-8b-instant")
-    GROQ_SUBQUESTION_LLM = os.getenv("GROQ_SUBQUESTION_LLM", "llama-3.3-70b-versatile")
+    GROQ_ROUTER_LLM = os.getenv("GROQ_ROUTER_LLM", "qwen/qwen3.6-27b")
+    GROQ_SUBQUESTION_LLM = os.getenv("GROQ_SUBQUESTION_LLM", "qwen/qwen3.6-27b")
+    GROQ_CONTEXT_WINDOW = _int_env("GROQ_CONTEXT_WINDOW", 131072)
     GOOGLE_MAX_RETRIES = _int_env("GOOGLE_MAX_RETRIES", 2)
     PDF_OCR_DPI = _int_env("PDF_OCR_DPI", 200)
 
-    # BAAI/bge-m3 supports up to 8,192 tokens — the full chunk is embedded
-    # without truncation at the current CHUNK_SIZE of 1024.
-    CHUNK_SIZE = 1024
+    # BAAI/bge-m3 supports up to 8,192 tokens, so the configured chunk is
+    # embedded without truncation.
+    # Shorter sequences reduce BGE-M3's CPU transformer cost substantially.
+    CHUNK_SIZE = _int_env("CHUNK_SIZE", 512)
     # Overlap ensures formulas and sentences that span chunk boundaries
     # are captured in both neighbouring chunks.
-    CHUNK_OVERLAP = 128
+    CHUNK_OVERLAP = _int_env("CHUNK_OVERLAP", 64)
+    EMBED_BATCH_SIZE = _int_env("EMBED_BATCH_SIZE", 16)
+    PRELOAD_EMBED_MODEL = _bool_env("PRELOAD_EMBED_MODEL", True)
     # Retrieve the top-k most relevant chunks for the LLM to read.
     SIMILARITY_TOP_K = 8
 

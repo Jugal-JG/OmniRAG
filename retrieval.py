@@ -26,6 +26,8 @@ from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.core.retrievers import BaseRetriever
 from llama_index.core.schema import NodeWithScore, QueryBundle
 
+from followup import extract_labelled_reference_numbers, normalize_reference_typos
+
 # Default answer prompt. The label-mapping paragraph is the key part: papers
 # print equations as "(15)", so a synthesizer LLM (especially a strict one like
 # Gemini) otherwise reports "no information about formula 15" even when the
@@ -36,12 +38,26 @@ DEFAULT_QA_TEMPLATE = PromptTemplate(
     "{context_str}\n"
     "---------------------\n"
     "Answer the query using only the context above, not prior knowledge.\n\n"
+    "Do not expose internal source metadata field names such as page_label, file_path, "
+    "or node identifiers in the prose answer; source citations are displayed separately.\n\n"
     "IMPORTANT — reference labels: In documents, equations, formulas, tables, and "
     "figures are labelled with a parenthesised number such as (15). A question "
     "about 'formula 15', 'equation 15', 'eq. 15', or '(15)' refers to the "
     "expression or item labelled (15) in the context. Find that label and report "
     "the corresponding expression. Only say the answer is missing if no such "
     "label or content appears in the context.\n\n"
+    "NAMING RULE: If asked for an item's name, distinguish an explicit formal name "
+    "from a descriptive name. If the document prints no formal title, say so briefly, "
+    "then provide the most precise descriptive name supported by the surrounding "
+    "section, defined acronyms, quantity being computed, and mathematical method. "
+    "Do not stop at 'no specific name' when a grounded descriptive name is possible. "
+    "An acronym expansion or surrounding section title is not automatically the "
+    "formula's formal title; never claim 'formally named' unless the document explicitly "
+    "assigns that name to the numbered formula.\n\n"
+    "COMPARISON RULE: For comparisons of management guidance, outlook, or projections, "
+    "state the exact value from each period. If one report gives a percentage and the "
+    "other gives a total-dollar revenue projection, report both units exactly; do not "
+    "say the newer value is missing merely because it is not a percentage.\n\n"
     "MATH DELIMITERS REQUIREMENT:\n"
     "For any mathematical formulas, equations, or symbols, format them in LaTeX STRICTLY:\n"
     "- Use $$...$$ on its OWN LINE for ALL block equations, matrices, multi-component "
@@ -60,21 +76,17 @@ _TOKEN_RE = re.compile(r"\(\d+\)|[a-z0-9]+")
 # more; 20 keeps a #1 lexical hit competitive with a top-5 vector hit.
 _RRF_K = 20
 
-# Words that, when followed by a number, name a labelled element in the paper.
-_REF_WORDS = (
-    r"formula|equations?|eqn?|tables?|figures?|fig|sections?|sec|theorems?|"
-    r"lemmas?|corollar(?:y|ies)|algorithms?|alg|definitions?|def|"
-    r"propert(?:y|ies)|chapters?|steps?|lines?|examples?"
+_NAME_QUERY_RE = re.compile(r"\b(?:name|named|called|term|title)\b", re.IGNORECASE)
+_ACRONYM_RE = re.compile(r"\b[A-Z]{2,6}\b")
+_GUIDANCE_QUERY_RE = re.compile(
+    r"\b(?:guidance|outlook|projection|forecast|expects?\s+revenue|full[-\s]year)\b",
+    re.IGNORECASE,
 )
-_PAREN_NUM_RE = re.compile(r"\((\d+)\)")
-_REF_NUM_RE = re.compile(rf"(?:{_REF_WORDS})\.?\s*\(?(\d+)\)?", re.IGNORECASE)
 
 
 def _reference_numbers(query: str) -> set[str]:
     """Numbers the user is explicitly pointing at, e.g. 'formula 15' or '(27)'."""
-    nums = set(_PAREN_NUM_RE.findall(query))
-    nums.update(_REF_NUM_RE.findall(query))
-    return nums
+    return extract_labelled_reference_numbers(query)
 
 
 def _tokenize(text: str, *, is_query: bool = False) -> list[str]:
@@ -85,12 +97,15 @@ def _tokenize(text: str, *, is_query: bool = False) -> list[str]:
     # Asymmetry matters: expanding bare doc numbers (page numbers, years) into
     # "(N)" would let a page-15 header match an "equation 15" query. This way
     # only the real "(15)" label carries the rare high-IDF token.
+    if is_query:
+        text = normalize_reference_typos(text)
+    referenced_numbers = _reference_numbers(text) if is_query else set()
     out = []
     for tok in _TOKEN_RE.findall(text.lower()):
         out.append(tok)
         if tok.startswith("(") and tok.endswith(")"):
             out.append(tok[1:-1])
-        elif is_query and tok.isdigit():
+        elif is_query and tok.isdigit() and tok in referenced_numbers:
             out.append(f"({tok})")
     return out
 
@@ -162,6 +177,48 @@ class _HybridRetriever(BaseRetriever):
             if any(lbl in content for lbl in labels)
         ]
 
+    def _definition_nodes(self, query: str, referenced: list) -> list:
+        """Find document passages that expand acronyms used by a named item.
+
+        A numbered equation chunk may say only ``CP significance level`` while an
+        earlier section defines ``Clopper-Pearson (CP)``. Name/title questions need
+        both passages to produce a grounded descriptive name.
+        """
+        if not referenced or not _NAME_QUERY_RE.search(query):
+            return []
+
+        acronyms: list[str] = []
+        for node in referenced:
+            for acronym in _ACRONYM_RE.findall(node.get_content()):
+                if acronym not in acronyms:
+                    acronyms.append(acronym)
+
+        definitions = []
+        seen = {node.node_id for node in referenced}
+        for acronym in acronyms:
+            marker = f"({acronym})"
+            for node, content in zip(self._nodes, self._contents):
+                if node.node_id not in seen and marker in content:
+                    definitions.append(node)
+                    seen.add(node.node_id)
+                    break
+            if len(definitions) >= 2:
+                break
+        return definitions
+
+    def _guidance_nodes(self, query: str) -> list:
+        """Pull exact full-year revenue guidance passages into comparison contexts."""
+        if not _GUIDANCE_QUERY_RE.search(query):
+            return []
+        matches = []
+        for node, content in zip(self._nodes, self._contents):
+            text = content.lower()
+            if "full-year" not in text:
+                continue
+            if "revenue" in text and any(marker in text for marker in ("guidance", "expects revenue", "revenue of approximately")):
+                matches.append(node)
+        return matches
+
     def _retrieve(self, query_bundle: QueryBundle) -> list[NodeWithScore]:
         query = query_bundle.query_str
         vec = self._vector.retrieve(query_bundle)
@@ -181,11 +238,25 @@ class _HybridRetriever(BaseRetriever):
         # Force explicitly-referenced chunks ('(15)') to the front, then fill the
         # rest of the top-k with the fused ranking.
         forced = self._referenced_nodes(query)
+        definitions = self._definition_nodes(query, forced)
+        guidance = self._guidance_nodes(query)
         top_score = fused[order[0]] if order else 1.0
         results: list[NodeWithScore] = []
         seen: set[str] = set()
         for i, node in enumerate(forced[: self._top_k]):
             results.append(NodeWithScore(node=node, score=top_score + len(forced) - i))
+            seen.add(node.node_id)
+        for i, node in enumerate(definitions):
+            if len(results) >= self._top_k:
+                break
+            results.append(NodeWithScore(node=node, score=top_score + 0.5 - i * 0.01))
+            seen.add(node.node_id)
+        for i, node in enumerate(guidance):
+            if len(results) >= self._top_k:
+                break
+            if node.node_id in seen:
+                continue
+            results.append(NodeWithScore(node=node, score=top_score + 0.25 - i * 0.01))
             seen.add(node.node_id)
         for nid in order:
             if len(results) >= self._top_k:

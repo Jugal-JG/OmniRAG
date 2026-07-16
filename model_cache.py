@@ -29,7 +29,13 @@ def get_hf_embed(model_name: str):
         from llama_index.embeddings.huggingface import HuggingFaceEmbedding
         print(f"[model_cache] Loading HuggingFace embed model: {model_name} …")
 
-        kwargs = dict(model_name=model_name, trust_remote_code=True)
+        from config import Config
+
+        kwargs = dict(
+            model_name=model_name,
+            trust_remote_code=True,
+            embed_batch_size=Config.EMBED_BATCH_SIZE,
+        )
 
         query_instr = _QUERY_INSTRUCTIONS.get(model_name)
         if query_instr:

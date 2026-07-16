@@ -32,7 +32,13 @@ def build_or_load_file_index(filename: str, upload_dir, embed_model):
 
     # This lock/cache key is shared by Basic RAG, Router, ReAct, Sub-Question,
     # and Multi-Document, so a waiting engine can never embed the file again.
-    with index_cache.build_lock(file_paths, _CACHE_NAME):
+    build_lock = index_cache.build_lock(file_paths, _CACHE_NAME)
+    if build_lock.locked():
+        logger.info(
+            "[shared_vector] Waiting for in-progress index build for %s",
+            filename,
+        )
+    with build_lock:
         if index_cache.is_cache_usable(file_paths, _CACHE_NAME, require_meta=require_meta):
             return load()
         logger.info("[shared_vector] Building index for %s", filename)

@@ -70,6 +70,36 @@ const thinkingCard  = document.getElementById("thinkingCard");
 const activeModes   = document.getElementById("activeModes");
 const clearFilesBtn = document.getElementById("clearFilesBtn");
 const newChatBtn    = document.getElementById("newChatBtn");
+const themeToggle   = document.getElementById("themeToggle");
+const THEME_STORAGE_KEY = "omnirag_theme";
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const dark = theme === "dark";
+  themeToggle.setAttribute("aria-label", `Switch to ${dark ? "light" : "dark"} theme`);
+  themeToggle.title = `Switch to ${dark ? "light" : "dark"} theme`;
+}
+
+function animateThemeChange(nextTheme) {
+  const rect = themeToggle.getBoundingClientRect();
+  const wipe = document.createElement("div");
+  wipe.className = `theme-genie theme-genie-${nextTheme}`;
+  wipe.style.left = `${rect.left + rect.width / 2}px`;
+  wipe.style.top = `${rect.top + rect.height / 2}px`;
+  document.body.appendChild(wipe);
+
+  requestAnimationFrame(() => wipe.classList.add("animate"));
+  window.setTimeout(() => applyTheme(nextTheme), 280);
+  window.setTimeout(() => wipe.remove(), 1180);
+}
+
+themeToggle.addEventListener("click", () => {
+  const nextTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+  animateThemeChange(nextTheme);
+});
+
+applyTheme(localStorage.getItem(THEME_STORAGE_KEY) || "light");
 
 /* ── Bootstrap Toast ──────────────────────────────────────────────────────── */
 const toastEl = document.getElementById("toast");
@@ -89,9 +119,9 @@ async function loadApiStatus() {
     const res = await apiFetch("/api-status");
     const data = await res.json();
     const container = document.getElementById("api-status");
-    const labels = { mistral: "Mistral", google: "Google", groq: "Groq" };
+    const labels = { mistral: "Mistral", groq: "Groq", google: "Gemini" };
     container.innerHTML = Object.entries(labels).map(([k, label]) =>
-      `<span class="api-pill ${data[k] ? 'ok' : 'err'}">${label}</span>`
+      `<span class="provider-state ${data[k] ? 'available' : 'unavailable'}">${label}</span>`
     ).join("");
   } catch {}
 }
@@ -116,6 +146,20 @@ function renderFileList() {
        </button>
      </div>`
   ).join("");
+  clearFilesBtn.hidden = uploadedFiles.length === 0;
+  setQueryAvailability();
+}
+
+function setQueryAvailability() {
+  const hasFiles = uploadedFiles.length > 0;
+  queryInput.disabled = !hasFiles;
+  sendBtn.disabled = !hasFiles;
+  queryInput.placeholder = hasFiles
+    ? "Ask anything about your documents..."
+    : "Upload a document to start chatting";
+  document.querySelectorAll(".example-btn").forEach(btn => {
+    btn.disabled = !hasFiles;
+  });
 }
 
 async function removeFile(fname) {
@@ -356,7 +400,25 @@ function appendResponse(data) {
   chatContainer.appendChild(div);
   // Render any LaTeX math blocks in the answer after the element is in the DOM
   const answerEl = div.querySelector(".answer-content");
-  if (answerEl) renderMath(answerEl);
+  if (answerEl) {
+    renderMath(answerEl);
+    // Models do not consistently use h1 for the response title. Mark the
+    // first heading explicitly so the visual title is stable across answers.
+    answerEl.querySelector("h1, h2, h3")?.classList.add("answer-title");
+    answerEl.querySelectorAll("li strong:first-child, p > strong:first-child").forEach(strong => {
+      const label = strong.textContent.trim();
+      const nextText = strong.nextSibling?.textContent?.trimStart() || "";
+      const hasTrailingColon = nextText.startsWith(":");
+      const parentText = strong.parentElement?.textContent?.trim() || "";
+      const listText = strong.closest("li")?.textContent?.trim() || "";
+      const isStandalone = parentText === label || listText === label;
+      const isShortLabel = /^[\p{L}\p{N}\s-]{2,80}:?$/u.test(label);
+      if (isStandalone || (isShortLabel && (label.endsWith(":") || hasTrailingColon))) {
+        strong.classList.add("inline-subheading");
+      }
+    });
+    decorateNumericValues(answerEl);
+  }
   scrollToBottom();
 }
 
@@ -392,8 +454,8 @@ function exitLoadingMode() {
   sendBtn.classList.remove("stop-mode");
   sendBtn.title = "Send (Enter)";
   sendIcon.className = "bi bi-send-fill";
-  queryInput.disabled = false;
-  queryInput.focus();
+  setQueryAvailability();
+  if (uploadedFiles.length) queryInput.focus();
 }
 
 async function sendQuery() {
@@ -403,6 +465,11 @@ async function sendQuery() {
     removeThinkingBubble();
     exitLoadingMode();
     showToast("Generation stopped", "warning");
+    return;
+  }
+
+  if (!uploadedFiles.length) {
+    showToast("Upload at least one document before asking a question", "info");
     return;
   }
 
@@ -474,6 +541,18 @@ function escapeHtml(str) {
 
 function renderMarkdown(text) {
   try {
+    // Protect monetary amounts before interpreting $...$ as LaTeX. Without this,
+    // text such as "$389 million ... $2,714 million" becomes one giant math span.
+    const currencyBlocks = [];
+    let currencySafe = text.replace(
+      /\$\d[\d,]*(?:\.\d+)?(?=(?:\s+(?:thousand|million|billion|trillion)\b)|(?:[,.!?;:](?=\s|$))|$)/gi,
+      (match) => {
+        const idx = currencyBlocks.length;
+        currencyBlocks.push(match);
+        return `OMNIRAGCURRENCYBLOCK${idx}END`;
+      }
+    );
+
     // ── Step 1: Lift all math blocks out before marked sees them ───────────
     // marked.parse() aggressively processes $ symbols and backslashes,
     // mangling LaTeX content between $...$ delimiters. We stash each math
@@ -484,12 +563,12 @@ function renderMarkdown(text) {
     function stash(match) {
       const idx = mathBlocks.length;
       mathBlocks.push(match);
-      // Placeholder must survive marked (no special chars, unique per block).
-      return `\x02MATH${idx}\x03`;
+      // Use plain alphanumeric tokens so Marked leaves them untouched.
+      return `OMNIRAGMATHBLOCK${idx}END`;
     }
 
     // Order matters: extract $$...$$ display math before $...$ inline math.
-    let safe = text
+    let safe = currencySafe
       .replace(/\$\$([\s\S]*?)\$\$/g, stash)           // $$...$$ block
       .replace(/\$([^\$\n][^\$]*?)\$/g, stash)          // $...$ inline (no newlines)
       .replace(/\\\[([\s\S]*?)\\\]/g, stash)             // \[...\] block
@@ -499,7 +578,11 @@ function renderMarkdown(text) {
     let html = marked.parse(safe);
 
     // ── Step 3: Restore original math expressions ──────────────────────────
-    html = html.replace(/\x02MATH(\d+)\x03/g, (_, i) => mathBlocks[+i]);
+    html = html.replace(/OMNIRAGMATHBLOCK(\d+)END/g, (_, i) => mathBlocks[+i]);
+    html = html.replace(
+      /OMNIRAGCURRENCYBLOCK(\d+)END/g,
+      (_, i) => `<span class="no-math currency-amount">${escapeHtml(currencyBlocks[+i])}</span>`
+    );
 
     return html;
   } catch {
@@ -524,13 +607,48 @@ function renderMath(el) {
       ],
       throwOnError: false,   // never crash the page on bad LaTeX
       strict: false,
+      ignoredClasses: ["no-math"],
+    });
+    // Style only the rendered equation, not the paragraph that may introduce it.
+    el.querySelectorAll(".katex-display").forEach(display => {
+      display.classList.add("formula-callout");
     });
   } catch (e) {
     console.warn("[KaTeX] render failed:", e);
   }
 }
 
+function decorateNumericValues(container) {
+  container.querySelectorAll(".currency-amount").forEach(el => el.classList.add("numeric-value"));
+  const numericPattern = /(?:[$€£]\s?\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion))?|\b\d[\d,]*(?:\.\d+)?%)/gi;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (node.parentElement?.closest(".katex, .no-math, .numeric-value, pre, code")) continue;
+    if (numericPattern.test(node.textContent)) textNodes.push(node);
+    numericPattern.lastIndex = 0;
+  }
+
+  textNodes.forEach(node => {
+    const fragment = document.createDocumentFragment();
+    let lastIndex = 0;
+    node.textContent.replace(numericPattern, (match, offset) => {
+      fragment.append(document.createTextNode(node.textContent.slice(lastIndex, offset)));
+      const value = document.createElement("span");
+      value.className = "numeric-value";
+      value.textContent = match;
+      fragment.append(value);
+      lastIndex = offset + match.length;
+      return match;
+    });
+    fragment.append(document.createTextNode(node.textContent.slice(lastIndex)));
+    node.replaceWith(fragment);
+  });
+}
+
 /* ── Init ─────────────────────────────────────────────────────────────────── */
 loadApiStatus();
 updateToggles();
-queryInput.focus();
+renderFileList();

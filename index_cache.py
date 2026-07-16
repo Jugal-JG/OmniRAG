@@ -43,7 +43,7 @@ def _file_hash(file_paths: list[str]) -> str:
 def cache_key(file_paths: list[str], engine_name: str) -> str:
     # Include chunk_size and embed model in the key so changing either
     # auto-invalidates old indexes (avoids stale vector mismatches).
-    chunk_tag = f"c{Config.CHUNK_SIZE}"
+    chunk_tag = f"c{Config.CHUNK_SIZE}o{Config.CHUNK_OVERLAP}"
     model_tag = Config.EMBED_MODEL.replace("/", "_")
     return f"{engine_name}_{chunk_tag}_{model_tag}_{_file_hash(file_paths)}"
 

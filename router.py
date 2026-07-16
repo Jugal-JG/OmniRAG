@@ -1,5 +1,5 @@
 """
-Smart query router: rule-based first, then Groq/Llama-3.1-8b for ambiguous queries.
+Smart query router: explicit-mode constraints first, then the configured Groq LLM.
 Returns the chosen approach name + human-readable reasoning.
 """
 
@@ -8,6 +8,7 @@ from groq import Groq
 
 from config import Config
 from utils import classify_files
+from followup import explicit_engine_request
 
 
 APPROACH_LABELS = {
@@ -23,14 +24,17 @@ APPROACH_LABELS = {
 ROUTER_SYSTEM_PROMPT = """You are a query routing assistant for a document QA system.
 Given a user query and context, output ONLY one label from this list:
 
-- basic_rag       : Simple, narrow factual question from a single document.
-- subquestion     : Multi-part question, comparison across documents, or question needing decomposition.
-- router_engine   : Summarization / overview / "what is this about" queries, or when both summary and specific search may be needed.
+- basic_rag       : Specific factual, numerical, table, section, or equation lookup that can be answered from directly retrieved passages. It may ask for more than one closely related fact from the same context.
+- subquestion     : A question that genuinely needs decomposition into independent sub-questions, synthesis of distinct evidence, or comparison across documents.
+- router_engine   : A broad summary, overview, main-theme question, or a question where the system should choose between whole-document summary and targeted retrieval.
 
 Rules:
-- If the query contains words like "compare", "difference between", "vs", "both", "across" → subquestion
-- If the query contains "summarize", "overview", "what is this about", "explain briefly" → router_engine
-- Default to basic_rag for specific factual lookups.
+- Decide from the meaning and information needs of the complete query, not from one keyword.
+- Multiple requested facts do not automatically require subquestion if direct retrieval can answer them together.
+- The number of uploaded documents is context, not a deterministic rule.
+- Prefer basic_rag for exact values and explicitly labelled document elements.
+- Prefer router_engine only when broad document-level understanding or summary selection is useful.
+- Prefer subquestion only when decomposition and later synthesis materially improve the answer.
 
 Output ONLY the single label. No explanation."""
 
@@ -85,6 +89,20 @@ class QueryRouter:
         has_images = bool(images)
         has_texts = bool(texts)
 
+        requested_engine = explicit_engine_request(query)
+        text_engines = {"basic_rag", "router_engine", "subquestion", "react", "multi_document"}
+        request_is_compatible = (
+            requested_engine == "multimodal" and has_images and not has_texts
+        ) or (
+            requested_engine in text_engines and has_texts and not has_images
+        )
+        if requested_engine and request_is_compatible:
+            return {
+                "label": requested_engine,
+                "approach": APPROACH_LABELS[requested_engine],
+                "reason": f"User explicitly requested the {APPROACH_LABELS[requested_engine]} for this query.",
+            }
+
         # ── Rule-based (no API call) ──────────────────────────────────────────
         if thinking_mode:
             return {
@@ -121,53 +139,8 @@ class QueryRouter:
                 "reason": "No documents uploaded yet — using Basic RAG on any pre-loaded data.",
             }
 
-        # ── LLM classification for text-only queries ──────────────────────────
-        query_l = query.lower()
-        comparison_terms = (
-            "compare",
-            "comparison",
-            "difference",
-            "differences",
-            "similar",
-            "similarities",
-            "vs",
-            "versus",
-            "both",
-            "across",
-            "between",
-            "each",
-            "they",
-            "their",
-            "them",
-            "these",
-            "all documents",
-            "uploaded documents",
-        )
-        if len(texts) > 1 and any(term in query_l for term in comparison_terms):
-            return {
-                "label": "subquestion",
-                "approach": APPROACH_LABELS["subquestion"],
-                "reason": (
-                    "Rule detected a cross-document or plural question across "
-                    f"{len(texts)} docs â€” Sub-Question Engine."
-                ),
-            }
-
+        # ── LLM classification for normal text-only queries ───────────────────
         label, classify_err = self._llm_classify(query, len(texts))
-
-        # Sub-Question Engine is for comparing MULTIPLE documents.
-        # With only 1 text file it decomposes unnecessarily and misses direct facts —
-        # downgrade to Router Engine which handles both summary and vector search.
-        if label == "subquestion" and len(texts) == 1:
-            label = "router_engine"
-            return {
-                "label": label,
-                "approach": APPROACH_LABELS[label],
-                "reason": (
-                    "Query looked multi-part, but only 1 document is uploaded — "
-                    "using Router Engine (summary + vector) instead of Sub-Question Engine."
-                ),
-            }
 
         if classify_err:
             # LLM call failed — be honest about what happened instead of claiming
@@ -178,7 +151,7 @@ class QueryRouter:
             )
         else:
             reasons = {
-                "basic_rag": f"Groq/{Config.GROQ_ROUTER_LLM} classified this as a narrow factual lookup → Basic RAG.",
+                "basic_rag": f"Groq/{Config.GROQ_ROUTER_LLM} classified this as a targeted retrieval task → Basic RAG.",
                 "subquestion": f"Groq/{Config.GROQ_ROUTER_LLM} detected multi-part or cross-document comparison across {len(texts)} docs → Sub-Question Engine.",
                 "router_engine": f"Groq/{Config.GROQ_ROUTER_LLM} detected summarization or broad overview query → Router Query Engine.",
             }

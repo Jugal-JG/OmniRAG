@@ -22,6 +22,12 @@ from engines.multimodal import run as multimodal_run
 from router import QueryRouter
 from utils import classify_files
 from answer_format import MATH_FORMAT_INSTRUCTIONS
+from followup import (
+    explicit_engine_request,
+    normalize_reference_typos,
+    resolve_labelled_followup,
+)
+from answer_format import repair_bare_latex
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,6 +50,20 @@ Path(Config.UPLOAD_FOLDER).mkdir(parents=True, exist_ok=True)
 Path(Config.CACHE_FOLDER).mkdir(parents=True, exist_ok=True)
 
 router = QueryRouter()
+
+
+def _preload_embedding_model() -> None:
+    """Load embeddings during both Flask and Gunicorn application startup."""
+    if not Config.PRELOAD_EMBED_MODEL:
+        return
+    import model_cache
+
+    logger.info("[startup] Pre-loading embedding model: %s", Config.EMBED_MODEL)
+    model_cache.get_hf_embed(Config.EMBED_MODEL)
+    logger.info("[startup] Embedding model ready.")
+
+
+_preload_embedding_model()
 
 
 def allowed_file(filename: str) -> bool:
@@ -114,9 +134,18 @@ def _make_standalone(query_text: str) -> str:
     If conversation history exists, use Groq to rewrite the follow-up as a
     fully self-contained question so similarity search isn't polluted by history.
     """
+    query_text = normalize_reference_typos(query_text)
     history = _load_history(_session_dir())
     if not history:
         return query_text
+
+    deterministic = resolve_labelled_followup(query_text, history)
+    if deterministic != query_text:
+        logger.info(
+            "[standalone-question] Resolved labelled follow-up deterministically: %r",
+            deterministic,
+        )
+        return deterministic
 
     last_turns = history[-MAX_HISTORY:]
     history_text = "\n".join(
@@ -127,6 +156,8 @@ def _make_standalone(query_text: str) -> str:
         f"Follow-up question: {query_text}\n\n"
         "Rewrite the follow-up as a single, fully self-contained question that includes "
         "all context needed from the conversation above. "
+        "Preserve and repeat exact document reference labels such as formula (15), "
+        "Table 3, or Section 4.2 whenever the follow-up refers to them indirectly. "
         "If the question is already self-contained, return it unchanged. "
         "Output ONLY the rewritten question — no explanation, no quotes."
     )
@@ -330,8 +361,9 @@ def query():
     )
 
     # ── Route ──────────────────────────────────────────────────────────────────
+    routing_query = query_text if explicit_engine_request(query_text) else standalone_query
     routing = router.route(
-        query=query_text,
+        query=routing_query,
         filenames=filenames,
         multi_doc_mode=multi_doc_mode,
         thinking_mode=thinking_mode,
@@ -416,7 +448,8 @@ def query():
             500,
         )
 
-    answer = result.get("answer", "")
+    answer = repair_bare_latex(result.get("answer", ""))
+    result["answer"] = answer
     logger.info("[query] completed engine=%s answer_chars=%s", label, len(answer))
     _save_to_history(query_text, answer[:600], routing["approach"])
 
@@ -451,11 +484,4 @@ def healthz():
 
 
 if __name__ == "__main__":
-    # Pre-load the embedding model into RAM during server boot so the
-    # first user query does not have to wait 40-70s for model loading.
-    import model_cache
-    logger.info("[startup] Pre-loading embedding model: %s", Config.EMBED_MODEL)
-    model_cache.get_hf_embed(Config.EMBED_MODEL)
-    logger.info("[startup] Embedding model ready.")
-
     app.run(debug=True, port=5000, use_reloader=False)

@@ -6,6 +6,8 @@ ENV PIP_NO_CACHE_DIR=1
 ENV MALLOC_ARENA_MAX=2
 ENV HF_HOME=/data/.cache/huggingface
 ENV SENTENCE_TRANSFORMERS_HOME=/data/.cache/sentence-transformers
+ENV UPLOAD_FOLDER=/data/uploads
+ENV CACHE_FOLDER=/data/cache
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
 WORKDIR /app
@@ -22,8 +24,8 @@ RUN pip install --upgrade pip \
 
 COPY . .
 
-RUN mkdir -p uploads cache
+RUN mkdir -p /data/uploads /data/cache /data/.cache/huggingface /data/.cache/sentence-transformers
 
 EXPOSE 7860
 
-CMD ["sh", "-c", "mkdir -p ${UPLOAD_FOLDER:-uploads} ${CACHE_FOLDER:-cache} ${HF_HOME:-/data/.cache/huggingface} ${SENTENCE_TRANSFORMERS_HOME:-/data/.cache/sentence-transformers} && gunicorn app:app --bind 0.0.0.0:${PORT:-7860} --workers 1 --threads 4 --timeout 600 --access-logfile - --error-logfile -"]
+CMD ["sh", "-c", "mkdir -p ${UPLOAD_FOLDER:-uploads} ${CACHE_FOLDER:-cache} ${HF_HOME:-/data/.cache/huggingface} ${SENTENCE_TRANSFORMERS_HOME:-/data/.cache/sentence-transformers} && gunicorn app:app --preload --bind 0.0.0.0:${PORT:-7860} --workers 1 --threads 4 --timeout 600 --access-logfile - --error-logfile -"]

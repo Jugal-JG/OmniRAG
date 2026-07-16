@@ -45,8 +45,9 @@ def _make_groq_llm():
         model=Config.GROQ_SUBQUESTION_LLM,
         is_chat_model=True,
         is_function_calling_model=False,
+        context_window=Config.GROQ_CONTEXT_WINDOW,
         temperature=0,
-        max_tokens=1024,
+        max_tokens=Config.ANSWER_MAX_TOKENS,
         max_retries=0,
     )
 
@@ -56,7 +57,7 @@ def _make_gemini_llm():
         api_key=Config.GOOGLE_API_KEY,
         model=Config.GOOGLE_LLM,
         temperature=0,
-        max_tokens=1024,
+        max_tokens=Config.ANSWER_MAX_TOKENS,
         max_retries=Config.GOOGLE_MAX_RETRIES,
         is_function_calling_model=False,
     )
@@ -114,14 +115,21 @@ def _make_router(vector_index, summary_index, llm):
             similarity_top_k=Config.SIMILARITY_TOP_K,
             llm=llm,
         ),
-        description="Useful for specific questions that require retrieving exact facts or passages.",
+        description=(
+            "Choose this for targeted retrieval: exact facts, calculations, names, "
+            "tables, sections, or labelled equations/formulas, including questions "
+            "about several specific items."
+        ),
     )
     summary_tool = QueryEngineTool.from_defaults(
         query_engine=summary_index.as_query_engine(
             response_mode="tree_summarize",
             llm=llm,
         ),
-        description="Useful for summarization, overviews, or questions about the overall content.",
+        description=(
+            "Choose this only for broad whole-document summaries, overviews, themes, "
+            "or main ideas. Do not choose it for exact values or labelled document items."
+        ),
     )
     return RouterQueryEngine(
         selector=LLMSingleSelector.from_defaults(llm=llm),
@@ -147,7 +155,10 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
 
     query_start = time.perf_counter()
     try:
-        response = _make_router(vector_index, summary_index, llm).query(_formatted_query(query))
+        response = _make_router(vector_index, summary_index, llm).query(
+            _formatted_query(query)
+        )
+        selected = getattr(response, "metadata", {}).get("selected_tool", "")
     except Exception as exc:
         from utils import is_rate_limit_error
         if not is_rate_limit_error(exc):
@@ -158,13 +169,13 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
             str(exc)[:240],
             Config.GOOGLE_LLM,
         )
-        response = _make_router(vector_index, summary_index, _make_gemini_llm()).query(
+        fallback_llm = _make_gemini_llm()
+        response = _make_router(vector_index, summary_index, fallback_llm).query(
             _formatted_query(query)
         )
+        selected = getattr(response, "metadata", {}).get("selected_tool", "")
 
     logger.info("[router_engine] query execution took %.2fs", time.perf_counter() - query_start)
-    selected = getattr(response, "metadata", {}).get("selected_tool", "")
-
     return {
         "answer": str(response),
         "sources": format_source_nodes(getattr(response, "source_nodes", [])),

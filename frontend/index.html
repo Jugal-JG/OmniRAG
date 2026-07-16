@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -13,21 +13,22 @@
 </head>
 <body>
 
-<nav class="navbar navbar-dark px-4 py-2 app-navbar">
+<nav class="navbar px-4 py-2 app-navbar">
   <div class="d-flex align-items-center gap-3">
     <span class="navbar-brand mb-0 fw-bold fs-5">
-      <i class="bi bi-diagram-3-fill text-warning me-2"></i>OmniRAG
+      <span class="brand-mark">Omni<span>RAG</span></span>
     </span>
-    <span class="badge bg-secondary opacity-75 fw-normal">6 Engines</span>
-    <span class="badge bg-info-subtle text-info fw-normal">v2</span>
+    <span class="brand-badge engines-badge">6 Engines</span>
+    <span class="brand-badge version-badge">v2</span>
   </div>
   <div class="d-flex gap-2 align-items-center">
-    <div id="api-status" class="d-flex gap-1"></div>
-    <button class="btn btn-sm btn-outline-info" id="newChatBtn" title="Start a new conversation (keeps uploaded files)">
-      <i class="bi bi-chat-square-text"></i> New Chat
+    <div id="api-status" class="provider-status" aria-label="Model provider availability"></div>
+    <button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch to dark theme" title="Switch to dark theme">
+      <i class="bi bi-sun-fill theme-icon-light" aria-hidden="true"></i>
+      <i class="bi bi-moon-stars-fill theme-icon-dark" aria-hidden="true"></i>
     </button>
-    <button class="btn btn-sm btn-outline-secondary" id="clearFilesBtn" title="Clear all uploaded files">
-      <i class="bi bi-trash3"></i> Clear Files
+    <button class="btn btn-sm new-chat-btn" id="newChatBtn" title="Start a new conversation (keeps uploaded files)">
+      <i class="bi bi-chat-square-text"></i> New Chat
     </button>
   </div>
 </nav>
@@ -48,6 +49,9 @@
       </div>
 
       <div id="fileList" class="file-list mt-2"></div>
+      <button class="btn btn-sm clear-files-btn" id="clearFilesBtn" title="Clear all uploaded files" hidden>
+        <i class="bi bi-trash3"></i> Clear Files
+      </button>
     </div>
 
     <hr class="sidebar-divider" />
@@ -89,12 +93,12 @@
     <div class="sidebar-section">
       <h6 class="sidebar-title"><i class="bi bi-info-circle me-2"></i>Engine Guide</h6>
       <div class="engine-guide">
-        <div class="guide-row"><span class="badge bg-primary">Basic RAG</span><span>Simple factual lookup</span></div>
-        <div class="guide-row"><span class="badge bg-success">Router Engine</span><span>Summary vs search</span></div>
-        <div class="guide-row"><span class="badge bg-teal">Sub-Question</span><span>Multi-doc compare</span></div>
-        <div class="guide-row"><span class="badge bg-purple">Multi-Doc Agent</span><span>Per-file agents</span></div>
-        <div class="guide-row"><span class="badge bg-orange">Multi-Modal</span><span>Image analysis</span></div>
-        <div class="guide-row"><span class="badge bg-danger">ReAct Agent</span><span>Tool reasoning</span></div>
+        <div class="guide-row"><span class="badge bg-primary"></span><strong>Basic RAG</strong><span>Simple factual lookup</span></div>
+        <div class="guide-row"><span class="badge bg-success"></span><strong>Router Engine</strong><span>Summary vs search</span></div>
+        <div class="guide-row"><span class="badge bg-teal"></span><strong>Sub-Question</strong><span>Multi-doc compare</span></div>
+        <div class="guide-row"><span class="badge bg-purple"></span><strong>Multi-Doc Agent</strong><span>Per-file agents</span></div>
+        <div class="guide-row"><span class="badge bg-orange"></span><strong>Multi-Modal</strong><span>Image analysis</span></div>
+        <div class="guide-row"><span class="badge bg-danger"></span><strong>ReAct Agent</strong><span>Tool reasoning</span></div>
       </div>
     </div>
   </aside>
@@ -102,11 +106,8 @@
   <main class="app-main">
     <div id="chatContainer" class="chat-container">
       <div id="welcomeMsg" class="welcome-splash text-center">
-        <div class="welcome-icon">
-          <i class="bi bi-diagram-3"></i>
-        </div>
-        <h4 class="mt-3 fw-semibold">OmniRAG Multi-Engine Explorer</h4>
-        <p class="text-secondary mb-4">Upload documents, then ask anything.<br/>The smart router picks the best engine automatically.</p>
+        <h1 class="mt-3">Ask your documents anything</h1>
+        <p class="welcome-copy mb-4">Upload your files and the router selects the ideal engine automatically.<br/>Precise answers, cited to the source.</p>
         <div class="d-flex flex-wrap gap-2 justify-content-center">
           <button class="btn btn-sm btn-outline-secondary example-btn" data-query="What is the main topic of this document?">What is the main topic?</button>
           <button class="btn btn-sm btn-outline-secondary example-btn" data-query="Summarize the key points in this document.">Summarize key points</button>

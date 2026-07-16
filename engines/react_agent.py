@@ -82,6 +82,7 @@ def _make_llm(model: str, api_key: str | None = None) -> GoogleGenAI:
         model=model,
         max_retries=Config.GOOGLE_MAX_RETRIES,
         temperature=0,
+        max_tokens=Config.ANSWER_MAX_TOKENS,
     )
 
 
@@ -97,10 +98,9 @@ def _model_unavailable(exc: Exception) -> bool:
 
 _SYSTEM_PROMPT = (
     "You are an assistant that answers questions about the uploaded documents.\n"
-    "You have NO prior knowledge of the documents' contents. You do not know any\n"
-    "formulas, equations, numbers, or facts from them until you retrieve them.\n"
-    "Therefore, for EVERY question, your first step MUST be to call a document\n"
-    "search tool (emit an `Action:`). Never answer a factual question from your own\n"
+    "A mandatory document search is performed by the application before you run.\n"
+    "You MUST use the supplied retrieved excerpts as evidence. You may call a\n"
+    "document search tool for additional evidence, but never answer from prior\n"
     "knowledge — that would be a hallucination.\n\n"
     "The search tool returns VERBATIM excerpts from the document. Read them and base\n"
     "your answer only on their content. Equations, formulas, tables and figures are\n"
@@ -108,6 +108,15 @@ _SYSTEM_PROMPT = (
     "'equation 15', or 'eq. 15' refers to the expression labelled (15) in the\n"
     "excerpts — locate that label and report the corresponding expression. Only say\n"
     "you could not find it if no such label or content appears in the excerpts.\n\n"
+    "NAMING RULE: If asked for an item's name, distinguish an explicit formal name\n"
+    "from a descriptive name. If the document gives no formal title, say so briefly,\n"
+    "then give the most precise descriptive name supported by the surrounding section,\n"
+    "defined acronyms, computed quantity, and mathematical method. Do not stop at\n"
+    "'no specific name' when a grounded descriptive name is possible. An acronym\n"
+    "expansion or section title is not automatically the formula's formal title; never\n"
+    "claim 'formally named' unless the document explicitly assigns that title.\n\n"
+    "ACRONYM RULE: Expand an acronym only by copying its definition from the retrieved\n"
+    "document context. Never guess an expansion from prior knowledge.\n\n"
     "MATH DELIMITERS REQUIREMENT:\n"
     "For any mathematical formulas, equations, or symbols, you MUST format them in "
     "LaTeX using these delimiters STRICTLY:\n"
@@ -141,7 +150,8 @@ def _make_search_tool(fname: str, retriever, sources_sink: list) -> FunctionTool
         name=Path(fname).stem.replace(" ", "_").replace("-", "_"),
         description=(
             f"Search the document '{fname}' and return the most relevant verbatim "
-            "excerpts. Input: a search query string. Always call this before answering."
+            "excerpts. Input: a search query string. Use this when additional or "
+            "more targeted evidence is needed."
         ),
     )
 
@@ -156,10 +166,30 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
     # Tools no longer depend on the LLM (raw retrieval), so build them once.
     collected_sources: list = []
     tools = []
+    mandatory_context = []
     for fname in filenames:
         idx = _build_or_load_index(fname, upload_dir)
         retriever = retrieval.make_retriever(idx, similarity_top_k=Config.SIMILARITY_TOP_K)
+        nodes = retriever.retrieve(query)
+        if nodes:
+            collected_sources.extend(nodes)
+            mandatory_context.append(
+                f"===== Retrieved from {fname} =====\n{retrieval.format_context(nodes)}"
+            )
         tools.append(_make_search_tool(fname, retriever, collected_sources))
+
+    if not collected_sources:
+        raise RuntimeError(
+            "ReAct retrieval returned no source passages from the uploaded documents; "
+            "refusing to generate an ungrounded answer."
+        )
+
+    grounded_query = (
+        f"User question: {query}\n\n"
+        "Mandatory retrieved document context:\n"
+        + "\n\n".join(mandatory_context)
+        + "\n\nAnswer the user question using this context."
+    )
 
     def _run_with(model: str, api_key: str | None = None):
         llm = _make_llm(model, api_key=api_key)
@@ -173,7 +203,7 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
         )
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            resp = _run_async(_invoke_agent(agent, query))
+            resp = _run_async(_invoke_agent(agent, grounded_query))
         return resp, buf.getvalue()
 
     primary_model = Config.REACT_PRIMARY_LLM          # gemini-2.5-flash
@@ -198,11 +228,18 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
             print("[react] no GOOGLE_API_KEY2 set; no further fallback available")
             raise
 
-    thinking_steps = [line for line in raw_steps.splitlines() if line.strip()]
+    thinking_steps = [
+        f"Mandatory retrieval collected {len(collected_sources)} source passages."
+    ]
+    thinking_steps.extend(line for line in raw_steps.splitlines() if line.strip())
 
     answer = str(response)
     # Prefer nodes captured from the tool calls; fall back to any on the response.
     source_nodes = collected_sources or getattr(response, "source_nodes", [])
+    if not source_nodes:
+        raise RuntimeError(
+            "ReAct produced an answer without document sources; rejecting the answer."
+        )
 
     return {
         "answer": answer,

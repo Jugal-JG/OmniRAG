@@ -412,6 +412,8 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
             model=Config.GROQ_LLM,
             is_chat_model=True,
             is_function_calling_model=False,
+            context_window=Config.GROQ_CONTEXT_WINDOW,
+            max_tokens=Config.ANSWER_MAX_TOKENS,
         )
 
     embed_model = model_cache.get_hf_embed(Config.EMBED_MODEL)

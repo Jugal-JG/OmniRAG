@@ -77,8 +77,9 @@ def _make_groq_llm():
         model=Config.GROQ_SUBQUESTION_LLM,
         is_chat_model=True,
         is_function_calling_model=False,
+        context_window=Config.GROQ_CONTEXT_WINDOW,
         temperature=0,
-        max_tokens=1024,
+        max_tokens=Config.ANSWER_MAX_TOKENS,
         max_retries=0,
     )
 
@@ -88,7 +89,7 @@ def _make_gemini_llm():
         api_key=Config.GOOGLE_API_KEY,
         model=Config.GOOGLE_LLM,
         temperature=0,
-        max_tokens=1024,
+        max_tokens=Config.ANSWER_MAX_TOKENS,
         max_retries=Config.GOOGLE_MAX_RETRIES,
         is_function_calling_model=False,
     )
@@ -183,7 +184,13 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
     logger.info("[subquestion] query execution took %.2fs", time.perf_counter() - query_start)
 
     sub_qa = []
-    for sq in getattr(response, "metadata", {}).get("sub_question_response_pairs", []):
+    # Some LlamaIndex responses legitimately omit metadata.  The answer and
+    # source nodes are still valid in that case, so avoid failing after an
+    # otherwise successful query merely while collecting optional trace data.
+    metadata = getattr(response, "metadata", None) or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    for sq in metadata.get("sub_question_response_pairs", []):
         sub_qa.append(f"Q: {sq.sub_q.sub_question}\nA: {sq.response}")
 
     return {

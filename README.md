@@ -69,6 +69,13 @@ If a query reaches an engine while that file’s vector index is still building,
 
 Cache keys include file content, chunk size, and embedding model. Changing any of them creates a new cache automatically.
 
+The embedding model is loaded while Flask/Gunicorn starts, before the first upload.
+The default BGE-M3 indexing profile uses 512-token chunks, 64-token overlap,
+and batches of 16 to reduce CPU cold-index time. These can be adjusted with
+`CHUNK_SIZE`, `CHUNK_OVERLAP`, and `EMBED_BATCH_SIZE`. On Hugging Face, uploaded
+files and vector indexes use `/data/uploads` and `/data/cache`; attaching persistent
+Space storage allows unchanged PDFs to reuse their indexes across restarts.
+
 ## Quick start
 
 Prerequisites: Python 3.12+ and API keys for Mistral, Google, and Groq.
@@ -112,7 +119,7 @@ GOOGLE_LLM=gemini-3.1-flash-lite-preview
 REACT_PRIMARY_LLM=gemini-2.5-flash
 GROQ_LLM=qwen/qwen3.6-27b
 GROQ_VISION_LLM=qwen/qwen3.6-27b
-GROQ_ROUTER_LLM=llama-3.1-8b-instant
+GROQ_ROUTER_LLM=llama-3.3-70b-versatile
 GROQ_SUBQUESTION_LLM=llama-3.3-70b-versatile
 
 # Cross-origin frontend deployment

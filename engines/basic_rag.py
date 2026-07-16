@@ -24,7 +24,11 @@ def _build_or_load_index(file_paths: list[str], upload_dir: Path):
 
 @with_retry
 def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
-    llm = MistralAI(api_key=Config.MISTRAL_API_KEY, model=Config.MISTRAL_LLM)
+    llm = MistralAI(
+        api_key=Config.MISTRAL_API_KEY,
+        model=Config.MISTRAL_LLM,
+        max_tokens=Config.ANSWER_MAX_TOKENS,
+    )
     Settings.llm = llm
     logger.info("[basic_rag] LLM=MistralAI (%s)", Config.MISTRAL_LLM)
 

@@ -72,9 +72,19 @@ def format_source_nodes(source_nodes):
         if hasattr(node, "node"):
             text = node.node.get_content()[:300]
             file_name = node.node.metadata.get("file_name", "")
-            score = round(node.score, 4) if node.score is not None else None
+            score = getattr(node, "score", None)
+            if score is None:
+                metadata = getattr(node.node, "metadata", None) or {}
+                score = metadata.get("score", metadata.get("similarity", metadata.get("relevance_score")))
         elif hasattr(node, "get_content"):
             text = node.get_content()[:300]
+            metadata = getattr(node, "metadata", None) or {}
+            file_name = metadata.get("file_name", "")
+            score = metadata.get("score", metadata.get("similarity", metadata.get("relevance_score")))
+        try:
+            score = round(float(score), 4) if score is not None else None
+        except (TypeError, ValueError):
+            score = None
         sources.append({"text": text, "file": file_name, "score": score})
     return sources
 
