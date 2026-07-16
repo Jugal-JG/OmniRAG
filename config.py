@@ -52,8 +52,10 @@ class Config:
     # [TEST] BAAI/bge-m3 — 567M-param encoder with native dense + sparse
     # retrieval. Supports up to 8192 tokens. Trained on a large multilingual
     # corpus including scientific text. Faster than harrier on CPU.
-    EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
-    MISTRAL_EMBED_MODEL = "mistral-embed"
+    MISTRAL_EMBED_MODEL = os.getenv("MISTRAL_EMBED_MODEL", "mistral-embed")
+    # Use Mistral's remote embedding API so HF CPU is not the indexing bottleneck.
+    # The model name is included in the cache key, automatically isolating old BGE indexes.
+    EMBED_MODEL = MISTRAL_EMBED_MODEL
 
     # LLM model names. Env overrides let demos switch models without code edits.
     MISTRAL_LLM = os.getenv("MISTRAL_LLM", "mistral-large-latest")

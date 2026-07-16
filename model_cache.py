@@ -6,7 +6,7 @@ Caching the instance here means it's loaded ONCE per Flask process and
 reused across all subsequent requests — making repeat queries nearly instant.
 """
 
-_hf_models: dict = {}
+_embed_models: dict = {}
 
 # Decoder-only models like microsoft/harrier-oss-v1-270m require a task
 # instruction prefix on queries (but NOT on documents) for best retrieval.
@@ -23,25 +23,34 @@ _QUERY_INSTRUCTIONS = {
 }
 
 
-def get_hf_embed(model_name: str):
-    """Return a cached HuggingFaceEmbedding, loading it only on first call."""
-    if model_name not in _hf_models:
-        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-        print(f"[model_cache] Loading HuggingFace embed model: {model_name} …")
-
+def get_embed_model(model_name: str):
+    """Return the cached embedding client for the configured provider."""
+    if model_name not in _embed_models:
         from config import Config
 
-        kwargs = dict(
-            model_name=model_name,
-            trust_remote_code=True,
-            embed_batch_size=Config.EMBED_BATCH_SIZE,
-        )
+        if model_name == Config.MISTRAL_EMBED_MODEL:
+            from llama_index.embeddings.mistralai import MistralAIEmbedding
 
-        query_instr = _QUERY_INSTRUCTIONS.get(model_name)
-        if query_instr:
-            kwargs["query_instruction"] = query_instr
-            kwargs["text_instruction"] = ""  # documents get no prefix
+            print(f"[model_cache] Creating Mistral embedding client: {model_name} ...")
+            _embed_models[model_name] = MistralAIEmbedding(
+                model_name=model_name,
+                api_key=Config.MISTRAL_API_KEY,
+                embed_batch_size=Config.EMBED_BATCH_SIZE,
+            )
+        else:
+            from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
-        _hf_models[model_name] = HuggingFaceEmbedding(**kwargs)
-        print(f"[model_cache] Loaded: {model_name}")
-    return _hf_models[model_name]
+            print(f"[model_cache] Loading HuggingFace embed model: {model_name} ...")
+            kwargs = dict(
+                model_name=model_name,
+                trust_remote_code=True,
+                embed_batch_size=Config.EMBED_BATCH_SIZE,
+            )
+            query_instr = _QUERY_INSTRUCTIONS.get(model_name)
+            if query_instr:
+                kwargs["query_instruction"] = query_instr
+                kwargs["text_instruction"] = ""
+            _embed_models[model_name] = HuggingFaceEmbedding(**kwargs)
+
+        print(f"[model_cache] Ready: {model_name}")
+    return _embed_models[model_name]

@@ -147,7 +147,7 @@ def _formatted_query(query: str) -> str:
 def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
     start = time.perf_counter()
     llm = _make_groq_llm()
-    embed_model = model_cache.get_hf_embed(Config.EMBED_MODEL)
+    embed_model = model_cache.get_embed_model(Config.EMBED_MODEL)
     Settings.llm = llm
     Settings.embed_model = embed_model
     Settings.chunk_size = Config.CHUNK_SIZE

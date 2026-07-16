@@ -59,7 +59,7 @@ def _preload_embedding_model() -> None:
     import model_cache
 
     logger.info("[startup] Pre-loading embedding model: %s", Config.EMBED_MODEL)
-    model_cache.get_hf_embed(Config.EMBED_MODEL)
+    model_cache.get_embed_model(Config.EMBED_MODEL)
     logger.info("[startup] Embedding model ready.")
 
 
@@ -232,7 +232,7 @@ def _preindex_basic_rag(filenames: list[str], upload_dir: Path):
         import model_cache
         from llama_index.core import Settings
 
-        embed_model = model_cache.get_hf_embed(Config.EMBED_MODEL)
+        embed_model = model_cache.get_embed_model(Config.EMBED_MODEL)
         Settings.embed_model = embed_model
         Settings.chunk_size = Config.CHUNK_SIZE
         Settings.chunk_overlap = Config.CHUNK_OVERLAP
@@ -395,9 +395,7 @@ def query():
                 f"Text routed to {text_routing['approach']} ({text_routing['reason']})."
             )
 
-            from groq import Groq
-
-            client = Groq(api_key=Config.GROQ_API_KEY)
+            from llama_index.llms.mistralai import MistralAI
             merge_prompt = (
                 f"Image analysis result:\n{mm_result['answer']}\n\n"
                 f"Text document analysis result:\n{text_result['answer']}\n\n"
@@ -406,12 +404,12 @@ def query():
                 "Do not output any internal reasoning, scratchpad, or markdown tags like <think>."
                 + MATH_FORMAT_INSTRUCTIONS
             )
-            merge_resp = client.chat.completions.create(
-                model=Config.GROQ_LLM,
-                messages=[{"role": "user", "content": merge_prompt}],
+            merge_llm = MistralAI(
+                api_key=Config.MISTRAL_API_KEY,
+                model=Config.MISTRAL_LLM,
                 max_tokens=1024,
             )
-            merged_answer = merge_resp.choices[0].message.content
+            merged_answer = str(merge_llm.complete(merge_prompt)).strip()
 
             # Strip <think>...</think> block if present
             import re

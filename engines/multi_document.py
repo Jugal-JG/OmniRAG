@@ -416,7 +416,7 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
             max_tokens=Config.ANSWER_MAX_TOKENS,
         )
 
-    embed_model = model_cache.get_hf_embed(Config.EMBED_MODEL)
+    embed_model = model_cache.get_embed_model(Config.EMBED_MODEL)
     Settings.llm = agent_llm
     Settings.embed_model = embed_model
     Settings.chunk_size = Config.CHUNK_SIZE

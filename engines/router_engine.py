@@ -67,7 +67,7 @@ def _build_or_load_indexes(file_paths: list[str], upload_dir: Path):
     cache_file_paths = [str(upload_dir / f) for f in file_paths]
     sum_cache = index_cache.get_cache_path(cache_file_paths, "router_engine_sum")
 
-    embed_model = model_cache.get_hf_embed(Config.EMBED_MODEL)
+    embed_model = model_cache.get_embed_model(Config.EMBED_MODEL)
     Settings.embed_model = embed_model
     Settings.chunk_size = Config.CHUNK_SIZE
     Settings.chunk_overlap = Config.CHUNK_OVERLAP

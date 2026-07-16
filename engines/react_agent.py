@@ -72,7 +72,7 @@ async def _invoke_agent(agent: ReActAgent, query: str, max_retries: int = 5):
     raise last_exc
 
 def _build_or_load_index(fname: str, upload_dir: Path):
-    embed_model = model_cache.get_hf_embed(Config.EMBED_MODEL)
+    embed_model = model_cache.get_embed_model(Config.EMBED_MODEL)
     return shared_vector_index.build_or_load_file_index(fname, upload_dir, embed_model)
 
 
@@ -158,7 +158,7 @@ def _make_search_tool(fname: str, retriever, sources_sink: list) -> FunctionTool
 
 @with_retry
 def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
-    embed_model = model_cache.get_hf_embed(Config.EMBED_MODEL)
+    embed_model = model_cache.get_embed_model(Config.EMBED_MODEL)
     Settings.embed_model = embed_model
     Settings.chunk_size = Config.CHUNK_SIZE
     Settings.chunk_overlap = Config.CHUNK_OVERLAP
