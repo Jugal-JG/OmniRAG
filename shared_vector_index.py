@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 from llama_index.core import StorageContext, VectorStoreIndex, load_index_from_storage
@@ -85,6 +86,30 @@ class CombinedVectorIndex:
 
 
 def build_or_load_indexes(filenames: list[str], upload_dir, embed_model):
-    """Build per-file indexes sequentially and expose one logical index."""
-    indexes = [build_or_load_file_index(filename, upload_dir, embed_model) for filename in filenames]
+    """Build/load per-file indexes with bounded concurrency.
+
+    Two files can embed concurrently on the HF deployment, while the per-file
+    cache locks above still guarantee that a file is never embedded twice.
+    """
+    if not filenames:
+        return CombinedVectorIndex([])
+
+    max_workers = min(2, len(filenames))
+    if max_workers == 1:
+        indexes = [build_or_load_file_index(filenames[0], upload_dir, embed_model)]
+    else:
+        logger.info(
+            "[shared_vector] Building/loading %s indexes with %s workers",
+            len(filenames),
+            max_workers,
+        )
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="index-build") as executor:
+            indexes = list(
+                executor.map(
+                    lambda filename: build_or_load_file_index(
+                        filename, upload_dir, embed_model
+                    ),
+                    filenames,
+                )
+            )
     return indexes[0] if len(indexes) == 1 else CombinedVectorIndex(indexes)
