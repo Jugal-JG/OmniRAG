@@ -159,13 +159,19 @@ Free Spaces can sleep and their default filesystem is ephemeral. Use persistent 
 
 ### Vercel frontend
 
-Deploy [`frontend/`](frontend) as the Vercel root directory. Set:
+Deploy [`frontend/`](frontend) as the Vercel root directory. The included
+`frontend/api/backend/[...path].js` Vercel Function is a same-origin proxy for
+a private Hugging Face Space. Set these Vercel environment variables:
 
 ```env
-OMNIRAG_API_BASE_URL=https://your-space.hf.space
+HF_SPACE_URL=https://your-space.hf.space
+HF_SPACE_READ_TOKEN=hf_...
 ```
 
-The frontend build runs `npm run build`, which generates `frontend/config.js` from that variable. The backend’s `CORS_ORIGINS` must include the exact Vercel origin.
+`HF_SPACE_READ_TOKEN` must be a fine-grained Hugging Face read token scoped to
+the Space. It is used only by the Vercel Function and is never sent to the
+browser. The frontend build routes production requests to `/api/backend`; do
+not set `OMNIRAG_API_BASE_URL` to the private `.hf.space` URL.
 
 ## Repository layout
 
@@ -201,7 +207,7 @@ uploads/                  Local session uploads (ignored by Git)
 
 **Formula does not render** — answers must contain valid `$...$`, `$$...$$`, `\(...\)`, or `\[...\]` delimiters. OmniRAG asks every engine for LaTeX; malformed source text can still require a follow-up request.
 
-**Vercel cannot call the API** — check that `OMNIRAG_API_BASE_URL` uses the `.hf.space` URL and that the exact Vercel URL is present in `CORS_ORIGINS`.
+**Vercel cannot call the API** — check `HF_SPACE_URL` and `HF_SPACE_READ_TOKEN` in Vercel, then inspect the `/api/backend/api-status` function response. Do not configure a browser-visible direct private HF URL.
 
 ## License
 
