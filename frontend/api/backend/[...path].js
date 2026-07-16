@@ -19,7 +19,16 @@ const ALLOWED_PATHS = new Set([
 function readPath(req) {
   const value = req.query?.path;
   const parts = Array.isArray(value) ? value : value ? [value] : [];
-  return parts.join("/").replace(/^\/+|\/+$/g, "");
+  if (parts.length) return parts.join("/").replace(/^\/+|\/+$/g, "");
+
+  // Vercel's plain Node function runtime does not always populate req.query
+  // for a catch-all route. Fall back to the original URL so `/api/backend/upload`
+  // is always forwarded as `/upload`, never as the HF Space root `/`.
+  const pathname = new URL(req.url || "/", "http://localhost").pathname;
+  const prefix = "/api/backend";
+  return pathname.startsWith(prefix)
+    ? pathname.slice(prefix.length).replace(/^\/+|\/+$/g, "")
+    : "";
 }
 
 function copyResponseHeaders(upstream, res) {
