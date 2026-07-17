@@ -4,6 +4,7 @@ Returns the chosen approach name + human-readable reasoning.
 """
 
 import os
+import re
 from groq import Groq
 
 from config import Config
@@ -21,16 +22,26 @@ APPROACH_LABELS = {
     "merged": "Merged (Multi-Modal + Text)",
 }
 
+_QUESTION_INTENT_RE = re.compile(
+    r"\b(?:what|which|who|when|where|why|how|compare|contrast|explain|summari[sz]e|list|describe|identify)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_multi_part_multi_document_query(query: str, num_text_files: int) -> bool:
+    """Recognize independently answerable requests before calling the router LLM."""
+    return num_text_files >= 2 and len(_QUESTION_INTENT_RE.findall(query)) >= 2
+
 ROUTER_SYSTEM_PROMPT = """You are a query routing assistant for a document QA system.
 Given a user query and context, output ONLY one label from this list:
 
 - basic_rag       : Specific factual, numerical, table, section, or equation lookup that can be answered from directly retrieved passages. It may ask for more than one closely related fact from the same context.
-- subquestion     : A question that genuinely needs decomposition into independent sub-questions, synthesis of distinct evidence, or comparison across documents.
+- subquestion     : A question that genuinely needs decomposition into independent sub-questions, synthesis of distinct evidence, or comparison across documents. Use this when the user asks several independent things (for example embeddings, ranking method, and paper formulas), especially with two or more documents.
 - router_engine   : A broad summary, overview, main-theme question, or a question where the system should choose between whole-document summary and targeted retrieval.
 
 Rules:
 - Decide from the meaning and information needs of the complete query, not from one keyword.
-- Multiple requested facts do not automatically require subquestion if direct retrieval can answer them together.
+- Keep basic_rag only when all requested facts can be answered from the same small set of passages. Route to subquestion when requests concern distinct concepts, sections, methods, or documents and each needs separate evidence.
 - The number of uploaded documents is context, not a deterministic rule.
 - Prefer basic_rag for exact values and explicitly labelled document elements.
 - Prefer router_engine only when broad document-level understanding or summary selection is useful.
@@ -140,6 +151,16 @@ class QueryRouter:
             }
 
         # ── LLM classification for normal text-only queries ───────────────────
+        if _is_multi_part_multi_document_query(query, len(texts)):
+            return {
+                "label": "subquestion",
+                "approach": APPROACH_LABELS["subquestion"],
+                "reason": (
+                    "Multiple selected documents and multiple independent questions "
+                    "detected -> Sub-Question Engine."
+                ),
+            }
+
         label, classify_err = self._llm_classify(query, len(texts))
 
         if classify_err:

@@ -60,6 +60,8 @@ class Config:
     # LLM model names. Env overrides let demos switch models without code edits.
     MISTRAL_LLM = os.getenv("MISTRAL_LLM", "mistral-large-latest")
     ANSWER_MAX_TOKENS = _int_env("ANSWER_MAX_TOKENS", 4096)
+    # Merged answers combine two model results, so 1024 tokens can end mid-answer.
+    MERGED_ANSWER_MAX_TOKENS = _int_env("MERGED_ANSWER_MAX_TOKENS", ANSWER_MAX_TOKENS)
     GOOGLE_LLM = os.getenv("GOOGLE_LLM", "gemini-3.1-flash-lite-preview")
     GOOGLE_GEMMA_LLM = os.getenv("GOOGLE_GEMMA_LLM", "gemma-4-26b-a4b-it")
     GEMINI_LLM = os.getenv("GEMINI_LLM", "gemini-2.5-flash")

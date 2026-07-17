@@ -51,6 +51,7 @@ function apiFetch(path, options = {}) {
 
 /* ── State ────────────────────────────────────────────────────────────────── */
 let uploadedFiles = [];
+let selectedFiles = new Set();
 let isLoading = false;
 let abortController = null;   // active AbortController while a query is in flight
 
@@ -139,9 +140,12 @@ function fileIcon(name) {
 function renderFileList() {
   fileList.innerHTML = uploadedFiles.map(f =>
     `<div class="file-chip">
+       <input class="file-select form-check-input m-0" type="checkbox" aria-label="Use ${escapeHtml(f)} in answers"
+              ${selectedFiles.has(f) ? "checked" : ""} ${isLoading ? "disabled" : ""}
+              onchange="toggleFileSelection('${escapeHtml(f)}', this.checked)">
        <i class="bi ${fileIcon(f)} file-icon"></i>
        <span class="file-name" title="${f}">${f}</span>
-       <button class="file-remove-btn" title="Remove file" onclick="removeFile('${escapeHtml(f)}')">
+       <button class="file-remove-btn" title="Remove file" ${isLoading ? "disabled" : ""} onclick="removeFile('${escapeHtml(f)}')">
          <i class="bi bi-x"></i>
        </button>
      </div>`
@@ -151,15 +155,28 @@ function renderFileList() {
 }
 
 function setQueryAvailability() {
-  const hasFiles = uploadedFiles.length > 0;
-  queryInput.disabled = !hasFiles;
-  sendBtn.disabled = !hasFiles;
-  queryInput.placeholder = hasFiles
+  const hasSelectedFiles = selectedFiles.size > 0;
+  queryInput.disabled = isLoading || !hasSelectedFiles;
+  sendBtn.disabled = !isLoading && !hasSelectedFiles;
+  queryInput.placeholder = hasSelectedFiles
     ? "Ask anything about your documents..."
-    : "Upload a document to start chatting";
+    : "Select a document to start chatting";
   document.querySelectorAll(".example-btn").forEach(btn => {
-    btn.disabled = !hasFiles;
+    btn.disabled = isLoading || !hasSelectedFiles;
   });
+}
+
+function syncUploadedFiles(files, selectNewFiles = false) {
+  const previousFiles = new Set(uploadedFiles);
+  uploadedFiles = files;
+  selectedFiles = new Set(files.filter(f => selectedFiles.has(f) || (selectNewFiles && !previousFiles.has(f))));
+}
+
+function toggleFileSelection(fname, selected) {
+  if (isLoading) return;
+  if (selected) selectedFiles.add(fname);
+  else selectedFiles.delete(fname);
+  renderFileList();
 }
 
 async function removeFile(fname) {
@@ -171,7 +188,7 @@ async function removeFile(fname) {
     });
     const data = await res.json();
     if (data.success) {
-      uploadedFiles = data.files;
+      syncUploadedFiles(data.files);
       renderFileList();
       showToast(`Removed: ${fname}`, "info");
     }
@@ -188,7 +205,7 @@ async function uploadFiles(files) {
     const res = await apiFetch("/upload", { method: "POST", body: formData });
     const data = await res.json();
     if (data.success) {
-      uploadedFiles = data.files;
+      syncUploadedFiles(data.files, true);
       renderFileList();
       if (data.errors?.length) showToast(`${data.errors[0]}`, "warning");
       else if (data.warnings?.length) showToast(`${data.warnings[0]}`, "warning");
@@ -223,6 +240,7 @@ clearFilesBtn.addEventListener("click", async () => {
   try {
     await apiFetch("/clear-files", { method: "POST" });
     uploadedFiles = [];
+    selectedFiles.clear();
     renderFileList();
     showToast("Files cleared", "info");
   } catch {}
@@ -250,12 +268,21 @@ function updateToggles() {
   thinkingCard.classList.remove("active");
 
   // mutual exclusivity visual cue
-  if (think) {
+  if (isLoading) {
     multiDocToggle.disabled = true;
+    thinkingToggle.disabled = true;
     multiDocCard.style.opacity = ".45";
+    thinkingCard.style.opacity = ".45";
+  } else if (think) {
+    multiDocToggle.disabled = true;
+    thinkingToggle.disabled = false;
+    multiDocCard.style.opacity = ".45";
+    thinkingCard.style.opacity = "";
   } else {
     multiDocToggle.disabled = false;
+    thinkingToggle.disabled = false;
     multiDocCard.style.opacity = "";
+    thinkingCard.style.opacity = "";
   }
 
   // Active mode chips in input bar
@@ -446,6 +473,8 @@ function enterLoadingMode() {
   sendBtn.title = "Stop generation";
   sendIcon.className = "bi bi-stop-fill";
   queryInput.disabled = true;
+  updateToggles();
+  renderFileList();
 }
 
 function exitLoadingMode() {
@@ -455,6 +484,8 @@ function exitLoadingMode() {
   sendBtn.title = "Send (Enter)";
   sendIcon.className = "bi bi-send-fill";
   setQueryAvailability();
+  updateToggles();
+  renderFileList();
   if (uploadedFiles.length) queryInput.focus();
 }
 
@@ -468,8 +499,8 @@ async function sendQuery() {
     return;
   }
 
-  if (!uploadedFiles.length) {
-    showToast("Upload at least one document before asking a question", "info");
+  if (!selectedFiles.size) {
+    showToast("Select at least one document before asking a question", "info");
     return;
   }
 
@@ -490,6 +521,7 @@ async function sendQuery() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         query,
+        selected_files: [...selectedFiles],
         multi_doc: multiDocToggle.checked,
         thinking: thinkingToggle.checked,
       }),

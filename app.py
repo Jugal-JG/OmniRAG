@@ -338,9 +338,21 @@ def query():
         return jsonify({"error": "Query cannot be empty."}), 400
 
     upload_dir = _session_dir()
-    filenames = _uploaded_files(upload_dir)
+    available_files = _uploaded_files(upload_dir)
+    requested_files = data.get("selected_files")
+    if requested_files is None:
+        # Keep API clients written before document selection was added working.
+        filenames = available_files
+    elif not isinstance(requested_files, list):
+        return jsonify({"error": "selected_files must be a list."}), 400
+    else:
+        # Only accept names belonging to this browser session.  Never let a
+        # client select an arbitrary path on disk.
+        requested_names = {name for name in requested_files if isinstance(name, str)}
+        filenames = [name for name in available_files if name in requested_names]
 
-    filenames = [f for f in filenames if (upload_dir / f).exists()]
+    if not filenames:
+        return jsonify({"error": "Select at least one uploaded document."}), 400
 
     images, texts = classify_files(filenames)
     logger.info(
@@ -407,7 +419,7 @@ def query():
             merge_llm = MistralAI(
                 api_key=Config.MISTRAL_API_KEY,
                 model=Config.MISTRAL_LLM,
-                max_tokens=1024,
+                max_tokens=Config.MERGED_ANSWER_MAX_TOKENS,
             )
             merged_answer = str(merge_llm.complete(merge_prompt)).strip()
 
