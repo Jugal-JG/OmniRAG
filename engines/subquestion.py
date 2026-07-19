@@ -15,13 +15,11 @@ from llama_index.core.tools import QueryEngineTool, ToolMetadata
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.llms.openai_like import OpenAILike
 
-import asyncio
-import concurrent.futures
-
+import async_runtime
 import model_cache
 import shared_vector_index
 from config import Config
-from utils import format_source_nodes, is_daily_quota_error, with_retry
+from utils import format_source_nodes, is_daily_quota_error, is_rate_limit_error, with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +77,7 @@ def _make_groq_llm():
         is_function_calling_model=False,
         context_window=Config.GROQ_CONTEXT_WINDOW,
         temperature=0,
-        max_tokens=Config.ANSWER_MAX_TOKENS,
+        max_tokens=Config.SUBQUESTION_MAX_TOKENS,
         max_retries=0,
         additional_kwargs={"reasoning_effort": "none"},
     )
@@ -96,24 +94,60 @@ def _make_gemini_llm():
     )
 
 
-def _run_async_in_thread(fn, *args, **kwargs):
-    """Run LlamaIndex async internals in a clean event loop on Python 3.14."""
-    async def runner():
-        return await asyncio.to_thread(fn, *args, **kwargs)
+def _run_async_query(engine, query: str):
+    """Run a native LlamaIndex async query on the persistent provider loop."""
+    return async_runtime.run(engine.aquery(query))
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, runner()).result()
+
+def _is_empty_response(response) -> bool:
+    """LlamaIndex can swallow failed async sub-queries into Empty Response."""
+    return str(response or "").strip().lower() in {"", "empty response", "none", "null"}
 
 
 def _build_or_load_index(fname: str, upload_dir: Path, llm, embed_model=None):
     return shared_vector_index.build_or_load_file_index(fname, upload_dir, embed_model)
 
 
-def _make_tools(filenames: list[str], upload_dir: Path, llm, embed_model):
+class _FallbackQueryEngine:
+    """Use Gemini for just the document whose Groq answer is rate-limited."""
+
+    def __init__(self, primary_engine, fallback_engine, filename: str):
+        self.primary_engine = primary_engine
+        self.fallback_engine = fallback_engine
+        self.filename = filename
+
+    def __getattr__(self, name):
+        """Preserve the LlamaIndex query-engine interface (e.g. callbacks)."""
+        return getattr(self.primary_engine, name)
+
+    def query(self, query):
+        try:
+            return self.primary_engine.query(query)
+        except Exception as exc:
+            if not is_rate_limit_error(exc):
+                raise
+            logger.info("[subquestion] %s Groq rate-limited; answering this sub-question with Gemini", self.filename)
+            return self.fallback_engine.query(query)
+
+    async def aquery(self, query):
+        try:
+            return await self.primary_engine.aquery(query)
+        except Exception as exc:
+            if not is_rate_limit_error(exc):
+                raise
+            logger.info("[subquestion] %s Groq rate-limited; answering this sub-question with Gemini", self.filename)
+            return await self.fallback_engine.aquery(query)
+
+
+def _make_tools(filenames: list[str], upload_dir: Path, llm, embed_model, fallback_llm=None):
     tools = []
     for fname in filenames:
         idx = _build_or_load_index(fname, upload_dir, llm, embed_model)
-        qe = idx.as_query_engine(similarity_top_k=3, llm=llm)
+        primary_qe = idx.as_query_engine(similarity_top_k=3, llm=llm)
+        qe = primary_qe
+        if fallback_llm is not None:
+            fallback_qe = idx.as_query_engine(similarity_top_k=3, llm=fallback_llm)
+            qe = _FallbackQueryEngine(primary_qe, fallback_qe, fname)
         tools.append(
             QueryEngineTool(
                 query_engine=qe,
@@ -159,13 +193,14 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
         filenames,
     )
 
-    tools = _make_tools(filenames, upload_dir, llm, embed_model)
+    fallback_llm = _make_gemini_llm()
+    tools = _make_tools(filenames, upload_dir, llm, embed_model, fallback_llm)
 
     logger.info("[subquestion] index/tool setup took %.2fs", time.perf_counter() - start)
 
     query_start = time.perf_counter()
     try:
-        response = _run_async_in_thread(_make_engine(tools, llm).query, _formatted_query(query))
+        response = _run_async_query(_make_engine(tools, llm), _formatted_query(query))
     except Exception as exc:
         from utils import is_rate_limit_error
         if not is_rate_limit_error(exc):
@@ -178,8 +213,21 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
         )
         fallback_llm = _make_gemini_llm()
         fallback_tools = _make_tools(filenames, upload_dir, fallback_llm, embed_model)
-        response = _run_async_in_thread(
-            _make_engine(fallback_tools, fallback_llm).query,
+        response = _run_async_query(
+            _make_engine(fallback_tools, fallback_llm),
+            _formatted_query(query),
+        )
+
+    # SubQuestionQueryEngine catches individual tool failures internally. If
+    # every sub-question was rate-limited, no exception reaches the try/except
+    # above and it returns "Empty Response". Retry the whole request with the
+    # Gemini fallback rather than sending that misleading 200 response to UI.
+    if _is_empty_response(response):
+        logger.warning("[subquestion] all Groq sub-questions failed; retrying with Gemini %s", Config.GOOGLE_LLM)
+        fallback_llm = _make_gemini_llm()
+        fallback_tools = _make_tools(filenames, upload_dir, fallback_llm, embed_model)
+        response = _run_async_query(
+            _make_engine(fallback_tools, fallback_llm),
             _formatted_query(query),
         )
     logger.info("[subquestion] query execution took %.2fs", time.perf_counter() - query_start)

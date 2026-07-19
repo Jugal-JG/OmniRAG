@@ -60,6 +60,10 @@ class Config:
     # LLM model names. Env overrides let demos switch models without code edits.
     MISTRAL_LLM = os.getenv("MISTRAL_LLM", "mistral-large-latest")
     ANSWER_MAX_TOKENS = _int_env("ANSWER_MAX_TOKENS", 4096)
+    # Keep the same completion ceiling as other answer engines. This is a
+    # maximum, not a requested response length; per-document Groq rate limits
+    # are handled by the Gemini fallback in the Sub-Question engine.
+    SUBQUESTION_MAX_TOKENS = _int_env("SUBQUESTION_MAX_TOKENS", ANSWER_MAX_TOKENS)
     # Merged answers combine two model results, so 1024 tokens can end mid-answer.
     MERGED_ANSWER_MAX_TOKENS = _int_env("MERGED_ANSWER_MAX_TOKENS", ANSWER_MAX_TOKENS)
     GOOGLE_LLM = os.getenv("GOOGLE_LLM", "gemini-3.1-flash-lite-preview")
