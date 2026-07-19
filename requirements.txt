@@ -38,6 +38,7 @@ tenacity>=8.2.0
 pypdf>=4.0.0
 PyMuPDF>=1.24.0
 Pillow>=10.0.0
+openpyxl>=3.1.0
 
 # Optional: Multi-Doc reranking
 cohere>=5.0.0

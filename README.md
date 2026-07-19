@@ -13,7 +13,7 @@ license: mit
 
 OmniRAG is a Flask and LlamaIndex application for asking questions about uploaded documents and images. It automatically selects a suitable RAG/agent workflow, supports follow-up questions, and renders Markdown and LaTeX answers in the browser.
 
-Supported uploads: PDF, TXT, Markdown, HTML, PNG, JPG, JPEG, and GIF.
+Supported uploads: PDF, TXT, Markdown, HTML, CSV, XLSX, PNG, JPG, JPEG, and GIF.
 
 ## What it does
 
@@ -52,11 +52,11 @@ The frontend sends a browser-generated `X-Omnirag-Session-Id` header. The backen
 | ReAct Agent | Thinking mode | Gemini tool-using agent with document search tools |
 | Merged | Both images and text uploaded | Runs image and text analysis, then synthesizes a combined answer |
 
-All text engines use the same `BAAI/bge-m3` embedding model and shared vector-cache format. LLMs may differ by engine; that does not affect vector-index compatibility.
+All text engines use the same `mistral-embed` API model and shared vector-cache format. LLMs may differ by engine; that does not affect vector-index compatibility.
 
 ## Indexing and caching
 
-On upload, the backend starts a background Basic RAG pre-index job. It processes text files sequentially.
+On upload, the backend starts a background Basic RAG pre-index job. It processes text files sequentially so a 1-RPS Mistral limit is not exceeded by concurrent index jobs.
 
 ```text
 Upload PDF
@@ -67,11 +67,13 @@ Upload PDF
 
 If a query reaches an engine while that file’s vector index is still building, the engine waits on the shared cache lock, then loads the finished index. It does not embed the file a second time.
 
+CSV/XLSX files use a dual ingestion path. Exact rows, headers, and formulas are stored immediately in `CACHE_FOLDER/spreadsheets.sqlite3`; exact lookups and aggregations can run there without waiting for embeddings. In parallel, only sheet profiles, formula groups, and narrative cells enter the semantic index. Ordinary numeric rows are not duplicated into the vector store.
+
 Cache keys include file content, chunk size, and embedding model. Changing any of them creates a new cache automatically.
 
-The embedding model is loaded while Flask/Gunicorn starts, before the first upload.
-The default BGE-M3 indexing profile uses 512-token chunks, 64-token overlap,
-and batches of 16 to reduce CPU cold-index time. These can be adjusted with
+The embedding client is initialized while Flask/Gunicorn starts, before the first upload.
+The default Mistral indexing profile uses 512-token chunks, 64-token overlap,
+and batches of 32 to reduce API request count. These can be adjusted with
 `CHUNK_SIZE`, `CHUNK_OVERLAP`, and `EMBED_BATCH_SIZE`. On Hugging Face, uploaded
 files and vector indexes use `/data/uploads` and `/data/cache`; attaching persistent
 Space storage allows unchanged PDFs to reuse their indexes across restarts.

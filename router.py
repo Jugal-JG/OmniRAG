@@ -3,9 +3,8 @@ Smart query router: explicit-mode constraints first, then the configured Groq LL
 Returns the chosen approach name + human-readable reasoning.
 """
 
-import os
 import re
-from groq import Groq
+from llama_index.llms.google_genai import GoogleGenAI
 
 from config import Config
 from utils import classify_files
@@ -24,6 +23,10 @@ APPROACH_LABELS = {
 
 _QUESTION_INTENT_RE = re.compile(
     r"\b(?:what|which|who|when|where|why|how|compare|contrast|explain|summari[sz]e|list|describe|identify)\b",
+    re.IGNORECASE,
+)
+_BROAD_QUERY_RE = re.compile(
+    r"\b(?:summari[sz]e|overview|main\s+(?:topic|theme|idea)|key\s+(?:points|takeaways)|whole\s+document|document\s+as\s+a\s+whole)\b",
     re.IGNORECASE,
 )
 
@@ -54,30 +57,32 @@ class QueryRouter:
     def __init__(self):
         self._client = None
 
-    def _groq(self):
+    def _gemini(self):
         if self._client is None:
-            self._client = Groq(api_key=Config.GROQ_API_KEY)
+            self._client = GoogleGenAI(
+                api_key=Config.GOOGLE_API_KEY,
+                model=Config.GOOGLE_LLM,
+                temperature=0,
+                max_tokens=10,
+                max_retries=Config.GOOGLE_MAX_RETRIES,
+                is_function_calling_model=False,
+            )
         return self._client
 
     def _llm_classify(self, query: str, num_text_files: int) -> tuple[str, str | None]:
-        """Call Groq to classify the query. Falls back to basic_rag on any error.
+        """Call Gemini to classify the query. Falls back to basic_rag on any error.
 
         Returns (label, error_msg). error_msg is None on success, the exception
         string on failure — so callers can show an honest reason instead of
         claiming the model 'classified' something it never saw.
         """
         try:
-            user_msg = f"Number of uploaded text documents: {num_text_files}\nQuery: {query}"
-            resp = self._groq().chat.completions.create(
-                model=Config.GROQ_ROUTER_LLM,
-                messages=[
-                    {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                max_tokens=10,
-                temperature=0,
+            prompt = (
+                f"{ROUTER_SYSTEM_PROMPT}\n\n"
+                f"Number of uploaded text documents: {num_text_files}\n"
+                f"Query: {query}"
             )
-            label = resp.choices[0].message.content.strip().lower()
+            label = str(self._gemini().complete(prompt)).strip().lower()
             if label not in ("basic_rag", "subquestion", "router_engine"):
                 label = "basic_rag"
             return label, None
@@ -151,14 +156,32 @@ class QueryRouter:
             }
 
         # ── LLM classification for normal text-only queries ───────────────────
-        if _is_multi_part_multi_document_query(query, len(texts)):
+        if len(texts) >= 2 and all(name.lower().endswith((".csv", ".xlsx")) for name in texts):
+            spreadsheet_label, spreadsheet_err = self._llm_classify(query, len(texts))
+            if not spreadsheet_err and spreadsheet_label == "basic_rag":
+                return {
+                    "label": "basic_rag",
+                    "approach": APPROACH_LABELS["basic_rag"],
+                    "reason": (
+                        f"Gemini/{Config.GOOGLE_LLM} detected an exact structured query "
+                        "across the selected spreadsheets -> local SQLite path."
+                    ),
+                }
+
+        if len(texts) >= 2:
             return {
                 "label": "subquestion",
                 "approach": APPROACH_LABELS["subquestion"],
                 "reason": (
-                    "Multiple selected documents and multiple independent questions "
-                    "detected -> Sub-Question Engine."
+                    "Multiple selected documents detected -> Sub-Question Engine."
                 ),
+            }
+
+        if _BROAD_QUERY_RE.search(query):
+            return {
+                "label": "router_engine",
+                "approach": APPROACH_LABELS["router_engine"],
+                "reason": "Broad single-document question detected -> Router Query Engine.",
             }
 
         label, classify_err = self._llm_classify(query, len(texts))
@@ -175,6 +198,11 @@ class QueryRouter:
                 "basic_rag": f"Groq/{Config.GROQ_ROUTER_LLM} classified this as a targeted retrieval task → Basic RAG.",
                 "subquestion": f"Groq/{Config.GROQ_ROUTER_LLM} detected multi-part or cross-document comparison across {len(texts)} docs → Sub-Question Engine.",
                 "router_engine": f"Groq/{Config.GROQ_ROUTER_LLM} detected summarization or broad overview query → Router Query Engine.",
+            }
+            reasons = {
+                "basic_rag": f"Gemini/{Config.GOOGLE_LLM} classified this as a targeted retrieval task -> Basic RAG.",
+                "subquestion": f"Gemini/{Config.GOOGLE_LLM} detected a multi-part or cross-document request -> Sub-Question Engine.",
+                "router_engine": f"Gemini/{Config.GOOGLE_LLM} detected a broad summary or overview -> Router Query Engine.",
             }
             reason = reasons[label]
 

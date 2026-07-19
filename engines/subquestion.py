@@ -81,6 +81,7 @@ def _make_groq_llm():
         temperature=0,
         max_tokens=Config.ANSWER_MAX_TOKENS,
         max_retries=0,
+        additional_kwargs={"reasoning_effort": "none"},
     )
 
 
@@ -183,18 +184,8 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
         )
     logger.info("[subquestion] query execution took %.2fs", time.perf_counter() - query_start)
 
-    sub_qa = []
-    # Some LlamaIndex responses legitimately omit metadata.  The answer and
-    # source nodes are still valid in that case, so avoid failing after an
-    # otherwise successful query merely while collecting optional trace data.
-    metadata = getattr(response, "metadata", None) or {}
-    if not isinstance(metadata, dict):
-        metadata = {}
-    for sq in metadata.get("sub_question_response_pairs", []):
-        sub_qa.append(f"Q: {sq.sub_q.sub_question}\nA: {sq.response}")
-
     return {
         "answer": str(response),
         "sources": format_source_nodes(getattr(response, "source_nodes", [])),
-        "thinking_steps": sub_qa,
+        "thinking_steps": [],
     }

@@ -14,10 +14,6 @@ import os
 from pathlib import Path
 from typing import Iterable
 
-from llama_index.core import SimpleDirectoryReader
-from llama_index.core.schema import Document
-
-
 def _total_chars(docs: Iterable[Document]) -> int:
     return sum(len(doc.text or "") for doc in docs)
 
@@ -57,6 +53,8 @@ def _page_documents(
     file_path: Path,
     extraction_method: str,
 ) -> list[Document]:
+    from llama_index.core.schema import Document
+
     docs = []
     for page_number, text in page_text:
         cleaned = (text or "").strip()
@@ -74,6 +72,98 @@ def _page_documents(
             )
         )
     return docs
+
+
+def _cache_table(
+    rows: Iterable[tuple],
+    file_path: Path,
+    *,
+    sheet_name: str,
+    formula_rows: Iterable[tuple] | None = None,
+) -> None:
+    """Store one table exactly in SQLite; semantic documents are derived later."""
+    rows = iter(rows)
+    try:
+        headers = next(rows)
+    except StopIteration:
+        return
+
+    headers = [str(value).strip() if value is not None else f"Column {i + 1}" for i, value in enumerate(headers)]
+    formula_iter = iter(formula_rows) if formula_rows is not None else None
+    if formula_iter is not None:
+        next(formula_iter, None)  # Skip the header row to stay aligned with values.
+
+    materialized_rows = list(rows)
+    materialized_formulas = list(formula_iter) if formula_iter is not None else None
+    from spreadsheet_store import index_sheet
+
+    index_sheet(file_path, sheet_name, headers, materialized_rows, materialized_formulas)
+
+
+def _ingest_csv(file_path: Path) -> None:
+    import csv
+
+    with file_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        _cache_table(csv.reader(handle), file_path, sheet_name="CSV")
+
+
+def _ingest_xlsx(file_path: Path) -> None:
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise RuntimeError("XLSX support requires openpyxl. Install requirements.txt and restart the app.") from exc
+
+    # Values answer financial questions; formulas expose model logic when requested.
+    values_book = load_workbook(file_path, read_only=True, data_only=True)
+    formulas_book = load_workbook(file_path, read_only=True, data_only=False)
+    try:
+        for values_sheet, formulas_sheet in zip(values_book.worksheets, formulas_book.worksheets):
+            _cache_table(
+                values_sheet.iter_rows(values_only=True),
+                file_path,
+                sheet_name=values_sheet.title,
+                formula_rows=formulas_sheet.iter_rows(values_only=True),
+            )
+    finally:
+        values_book.close()
+        formulas_book.close()
+
+
+def ingest_spreadsheet(file_path: str | Path, force: bool = False) -> int:
+    """Parse a workbook once and make its exact rows immediately queryable."""
+    file_path = Path(file_path)
+    from spreadsheet_store import (
+        begin_ingestion,
+        cached_row_count,
+        fail_ingestion,
+        finish_ingestion,
+        is_ready,
+    )
+
+    if not force and is_ready(file_path):
+        return cached_row_count(file_path)
+    begin_ingestion(file_path)
+    try:
+        if file_path.suffix.lower() == ".csv":
+            _ingest_csv(file_path)
+        elif file_path.suffix.lower() == ".xlsx":
+            _ingest_xlsx(file_path)
+        else:
+            raise ValueError(f"Unsupported spreadsheet type: {file_path.suffix}")
+        count = finish_ingestion(file_path)
+        print(f"[spreadsheet_store] Ready: {file_path.name} ({count} rows)")
+        return count
+    except Exception as exc:
+        fail_ingestion(file_path, exc)
+        raise
+
+
+def _load_spreadsheet_documents(file_path: Path) -> list[Document]:
+    from llama_index.core.schema import Document
+    from spreadsheet_store import semantic_records
+
+    ingest_spreadsheet(file_path)
+    return [Document(text=item["text"], metadata=item["metadata"]) for item in semantic_records(file_path)]
 
 
 def _load_with_pymupdf_text(file_path: Path) -> list[Document]:
@@ -128,6 +218,19 @@ def load_documents(file_path: str | Path) -> list[Document]:
     file_path = Path(file_path)
     fname = file_path.name
     is_pdf = fname.lower().endswith(".pdf")
+
+    if file_path.suffix.lower() == ".csv":
+        docs = _load_spreadsheet_documents(file_path)
+        if not docs:
+            raise ValueError(f"No rows were found in '{fname}'.")
+        return docs
+    if file_path.suffix.lower() == ".xlsx":
+        docs = _load_spreadsheet_documents(file_path)
+        if not docs:
+            raise ValueError(f"No readable rows were found in '{fname}'.")
+        return docs
+
+    from llama_index.core import SimpleDirectoryReader
 
     docs = SimpleDirectoryReader(input_files=[str(file_path)]).load_data()
     total_chars = _total_chars(docs)

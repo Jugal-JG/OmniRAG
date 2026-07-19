@@ -133,7 +133,8 @@ function fileIcon(name) {
   const map = { pdf: "bi-file-pdf text-danger", txt: "bi-file-text text-secondary",
     png: "bi-file-image text-warning", jpg: "bi-file-image text-warning",
     jpeg: "bi-file-image text-warning", gif: "bi-file-image text-warning",
-    html: "bi-filetype-html text-orange", md: "bi-markdown text-info" };
+    html: "bi-filetype-html text-orange", md: "bi-markdown text-info",
+    csv: "bi-filetype-csv text-success", xlsx: "bi-file-earmark-spreadsheet text-success" };
   return map[ext] || "bi-file-earmark text-secondary";
 }
 
@@ -267,20 +268,33 @@ function updateToggles() {
   thinkingCard.classList.toggle("active-react", think);
   thinkingCard.classList.remove("active");
 
-  // mutual exclusivity visual cue
+  const setBlocked = (card, toggle, blocked, reason) => {
+    toggle.disabled = blocked;
+    card.classList.toggle("mode-blocked", blocked);
+    card.title = blocked ? reason : "";
+    card.setAttribute("aria-disabled", String(blocked));
+  };
+
+  // Only one explicit engine mode can be active. The unavailable card remains
+  // visible and explains why it cannot be selected when hovered.
   if (isLoading) {
-    multiDocToggle.disabled = true;
-    thinkingToggle.disabled = true;
-    multiDocCard.style.opacity = ".45";
-    thinkingCard.style.opacity = ".45";
+    setBlocked(multiDocCard, multiDocToggle, true, "Engine mode is locked while an answer is being generated.");
+    setBlocked(thinkingCard, thinkingToggle, true, "Engine mode is locked while an answer is being generated.");
+    multiDocCard.style.opacity = "";
+    thinkingCard.style.opacity = "";
   } else if (think) {
-    multiDocToggle.disabled = true;
-    thinkingToggle.disabled = false;
-    multiDocCard.style.opacity = ".45";
+    setBlocked(multiDocCard, multiDocToggle, true, "Turn off Thinking Mode before selecting Multi-Document Agent.");
+    setBlocked(thinkingCard, thinkingToggle, false, "");
+    multiDocCard.style.opacity = "";
+    thinkingCard.style.opacity = "";
+  } else if (multi) {
+    setBlocked(multiDocCard, multiDocToggle, false, "");
+    setBlocked(thinkingCard, thinkingToggle, true, "Turn off Multi-Document Agent before selecting Thinking Mode.");
+    multiDocCard.style.opacity = "";
     thinkingCard.style.opacity = "";
   } else {
-    multiDocToggle.disabled = false;
-    thinkingToggle.disabled = false;
+    setBlocked(multiDocCard, multiDocToggle, false, "");
+    setBlocked(thinkingCard, thinkingToggle, false, "");
     multiDocCard.style.opacity = "";
     thinkingCard.style.opacity = "";
   }
@@ -294,8 +308,14 @@ function updateToggles() {
   activeModes.innerHTML = chips.join("");
 }
 
-multiDocToggle.addEventListener("change", updateToggles);
-thinkingToggle.addEventListener("change", updateToggles);
+multiDocToggle.addEventListener("change", () => {
+  if (multiDocToggle.checked) thinkingToggle.checked = false;
+  updateToggles();
+});
+thinkingToggle.addEventListener("change", () => {
+  if (thinkingToggle.checked) multiDocToggle.checked = false;
+  updateToggles();
+});
 
 /* ── Auto-resize textarea ─────────────────────────────────────────────────── */
 queryInput.addEventListener("input", () => {
@@ -577,7 +597,7 @@ function renderMarkdown(text) {
     // text such as "$389 million ... $2,714 million" becomes one giant math span.
     const currencyBlocks = [];
     let currencySafe = text.replace(
-      /\$\d[\d,]*(?:\.\d+)?(?=(?:\s+(?:thousand|million|billion|trillion)\b)|(?:[,.!?;:](?=\s|$))|$)/gi,
+      /\$\s?\d[\d,]*(?:\.\d+)?(?:\s*(?:[kmbt]|thousand|million|billion|trillion)\b)?(?=(?:\s|[,.!?;:)\]}]|[–-]\s*\$?\d|$))/gi,
       (match) => {
         const idx = currencyBlocks.length;
         currencyBlocks.push(match);

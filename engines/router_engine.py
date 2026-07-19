@@ -1,11 +1,12 @@
 """Router Query Engine.
 
 Internally routes between SummaryIndex and VectorStoreIndex.
-LLM: Groq Llama 3.3, with Gemini Flash-Lite fallback.
+LLM: Groq Qwen, with Gemini Flash-Lite fallback on Groq rate limits.
 """
 
 from pathlib import Path
 import logging
+import re
 import time
 
 from llama_index.core import (
@@ -31,6 +32,10 @@ logger = logging.getLogger(__name__)
 ANSWER_FORMAT_INSTRUCTIONS = """
 
 Answer formatting:
+- Return only the final answer for the user. Never reveal analysis, planning,
+  reasoning, self-checks, draft text, constraints, or labels such as "Output".
+- Start directly with the answer; do not preface it with "Here is my thinking".
+- Write currency as `USD 59,696`, not `$...$`, so it is never mistaken for math.
 - Use clean Markdown.
 - If the answer discusses more than one person, company, document, or topic, use one short heading per item and bullet points under each.
 - If the user asks for impact, comparison, pros/cons, causes, or details, prefer bullets over one long paragraph.
@@ -38,17 +43,62 @@ Answer formatting:
 """
 
 
+def _requested_word_limit(query: str) -> int | None:
+    """Return a user-requested maximum word count, when one is explicit."""
+    match = re.search(
+        r"\b(?:under|below|less\s+than|within|maximum\s+of|at\s+most|max)\s+(\d+)\s+words?\b",
+        query,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    requested = int(match.group(1))
+    # "Less than 200 words" means at most 199 words.
+    if re.search(r"\bless\s+than\b", match.group(0), flags=re.IGNORECASE):
+        requested -= 1
+    return max(1, requested)
+
+
+def _clean_response(text: str, word_limit: int | None) -> str:
+    """Remove accidental model scratchpad text and enforce an explicit word limit."""
+    answer = str(text or "").strip()
+
+    # Some reasoning models return their internal draft followed by
+    # "[Output] -> final answer" in the same content field. Keep only the
+    # final output section. Normal answers are left unchanged.
+    markers = list(re.finditer(r"(?im)^\s*\[(?:final\s+)?output(?:\s+generation)?\]\s*(?:->|:)?\s*", answer))
+    if markers:
+        answer = answer[markers[-1].end():]
+        answer = re.split(
+            r"(?im)^\s*(?:✅|all constraints|self-correction|check against constraints|output matches|final check|proceeds\b)",
+            answer,
+            maxsplit=1,
+        )[0]
+        answer = answer.strip(' \n\t"')
+
+    if word_limit is not None:
+        words = re.findall(r"\S+", answer)
+        if len(words) > word_limit:
+            answer = " ".join(words[:word_limit]).rstrip(".,;:") + "…"
+    return answer
+
+
 def _make_groq_llm():
     return OpenAILike(
         api_key=Config.GROQ_API_KEY,
         api_base="https://api.groq.com/openai/v1",
-        model=Config.GROQ_SUBQUESTION_LLM,
+        model=Config.GROQ_ROUTER_LLM,
         is_chat_model=True,
         is_function_calling_model=False,
         context_window=Config.GROQ_CONTEXT_WINDOW,
         temperature=0,
         max_tokens=Config.ANSWER_MAX_TOKENS,
         max_retries=0,
+        # Qwen 3.6 is a reasoning model. Without this Groq can place its
+        # scratchpad directly in the visible answer content.
+        # The bundled OpenAI-compatible client supports reasoning_effort but
+        # not Groq's newer reasoning_format parameter.
+        additional_kwargs={"reasoning_effort": "none"},
     )
 
 
@@ -140,15 +190,50 @@ def _make_router(vector_index, summary_index, llm):
 
 def _formatted_query(query: str) -> str:
     from answer_format import MATH_FORMAT_INSTRUCTIONS
-    return f"{query.strip()}\n{ANSWER_FORMAT_INSTRUCTIONS}\n{MATH_FORMAT_INSTRUCTIONS}"
+    word_limit = _requested_word_limit(query)
+    limit_instruction = (
+        f"\n- Your final answer must contain no more than {word_limit} words."
+        if word_limit is not None else ""
+    )
+    return f"{query.strip()}\n{ANSWER_FORMAT_INSTRUCTIONS}{limit_instruction}\n{MATH_FORMAT_INSTRUCTIONS}"
 
 
 @with_retry
 def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
     start = time.perf_counter()
+    word_limit = _requested_word_limit(query)
     llm = _make_groq_llm()
     Settings.llm = llm
-    logger.info("[router_engine] LLM=OpenAILike/Groq (%s)", Config.GROQ_SUBQUESTION_LLM)
+    logger.info("[router_engine] LLM=OpenAILike/Groq (%s)", Config.GROQ_ROUTER_LLM)
+
+    # Broad workbook questions can use the compact sheet profiles immediately,
+    # without waiting for the background vector job.
+    from spreadsheet_store import profile_context
+
+    structured_profile = profile_context(filenames, upload_dir)
+    if structured_profile:
+        logger.info("[router_engine] using SQLite workbook profile; vector index not required")
+        prompt = (
+            "Answer the question only from these verified workbook profiles. "
+            "State when the profile is insufficient for a detailed claim.\n\n"
+            f"{structured_profile}\n\nQuestion: {_formatted_query(query)}"
+        )
+        try:
+            response = llm.complete(prompt)
+        except Exception as exc:
+            from utils import is_rate_limit_error
+            if not is_rate_limit_error(exc):
+                raise
+            logger.info("[router_engine] Groq rate limit; falling back to Gemini %s", Config.GOOGLE_LLM)
+            response = _make_gemini_llm().complete(prompt)
+        return {
+            "answer": _clean_response(str(response), word_limit),
+            "sources": [
+                {"file": filename, "text": "Structured workbook profile", "score": 1.0}
+                for filename in filenames
+            ],
+            "thinking_steps": ["Answered from local workbook profiles while semantic indexing continues in the background."],
+        }
 
     vector_index, summary_index = _build_or_load_indexes(filenames, upload_dir)
     logger.info("[router_engine] index setup took %.2fs", time.perf_counter() - start)
@@ -158,26 +243,19 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
         response = _make_router(vector_index, summary_index, llm).query(
             _formatted_query(query)
         )
-        selected = getattr(response, "metadata", {}).get("selected_tool", "")
     except Exception as exc:
         from utils import is_rate_limit_error
         if not is_rate_limit_error(exc):
             raise
-        logger.info(
-            "[router_engine] Groq rate limit / quota exhausted (%s: %s); falling back to Gemini %s",
-            type(exc).__name__,
-            str(exc)[:240],
-            Config.GOOGLE_LLM,
-        )
-        fallback_llm = _make_gemini_llm()
-        response = _make_router(vector_index, summary_index, fallback_llm).query(
+        logger.info("[router_engine] Groq rate limit; falling back to Gemini %s", Config.GOOGLE_LLM)
+        response = _make_router(vector_index, summary_index, _make_gemini_llm()).query(
             _formatted_query(query)
         )
-        selected = getattr(response, "metadata", {}).get("selected_tool", "")
+    selected = getattr(response, "metadata", {}).get("selected_tool", "")
 
     logger.info("[router_engine] query execution took %.2fs", time.perf_counter() - query_start)
     return {
-        "answer": str(response),
+        "answer": _clean_response(str(response), word_limit),
         "sources": format_source_nodes(getattr(response, "source_nodes", [])),
         "thinking_steps": [f"Internal router selected: {selected}"] if selected else [],
     }

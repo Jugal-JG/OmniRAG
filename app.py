@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_from_directory, session
@@ -43,13 +44,17 @@ app.config["SESSION_COOKIE_SAMESITE"] = Config.SESSION_COOKIE_SAMESITE
 app.config["SESSION_COOKIE_SECURE"] = Config.SESSION_COOKIE_SECURE
 CORS(app, origins=Config.CORS_ORIGINS, supports_credentials=True)
 
-ALLOWED_EXTENSIONS = {".txt", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".html", ".md"}
+ALLOWED_EXTENSIONS = {
+    ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".html", ".md",
+    ".csv", ".xlsx",
+}
 MAX_HISTORY = 3
 
 Path(Config.UPLOAD_FOLDER).mkdir(parents=True, exist_ok=True)
 Path(Config.CACHE_FOLDER).mkdir(parents=True, exist_ok=True)
 
 router = QueryRouter()
+_preindex_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="preindex")
 
 
 def _preload_embedding_model() -> None:
@@ -170,6 +175,7 @@ def _make_standalone(query_text: str) -> str:
             messages=[{"role": "user", "content": prompt}],
             max_tokens=150,
             temperature=0,
+            reasoning_effort="none",
         )
         reformulated = resp.choices[0].message.content.strip()
         # Strip <think>...</think> block if present (e.g. from Qwen reasoning model)
@@ -250,6 +256,7 @@ def upload():
     uploaded = []
     errors = []
     warnings = []
+    spreadsheet_status = {}
 
     for f in request.files.getlist("files"):
         if not f or not f.filename:
@@ -261,6 +268,20 @@ def upload():
         file_path = upload_dir / filename
         f.save(str(file_path))
         uploaded.append(filename)
+        if file_path.suffix.lower() in {".csv", ".xlsx"}:
+            try:
+                from doc_loader import ingest_spreadsheet
+
+                row_count = ingest_spreadsheet(file_path)
+                spreadsheet_status[filename] = {
+                    "structured": "ready",
+                    "rows": row_count,
+                    "semantic": "indexing",
+                }
+            except Exception as exc:
+                logger.exception("[upload] Spreadsheet ingestion failed for %s", filename)
+                errors.append(f"{filename} — spreadsheet parsing failed: {exc}")
+                spreadsheet_status[filename] = {"structured": "failed", "error": str(exc)}
         if _looks_like_scanned_pdf(file_path):
             warnings.append(
                 f"{filename} looks image-based/scanned, so answers may take longer."
@@ -278,14 +299,17 @@ def upload():
     # is instant.  We only index text files (not images).
     text_files = [f for f in combined if not f.lower().endswith((".png", ".jpg", ".jpeg", ".gif"))]
     if text_files:
-        threading.Thread(
-            target=_preindex_basic_rag,
-            args=(text_files, upload_dir),
-            daemon=True,
-        ).start()
+        # One global queue prevents overlapping calls to a 1-RPS embedding API.
+        _preindex_executor.submit(_preindex_basic_rag, text_files, upload_dir)
 
     return jsonify(
-        {"success": True, "files": combined, "errors": errors, "warnings": warnings}
+        {
+            "success": True,
+            "files": combined,
+            "errors": errors,
+            "warnings": warnings,
+            "spreadsheets": spreadsheet_status,
+        }
     )
 
 
@@ -433,10 +457,7 @@ def query():
             result = {
                 "answer": merged_answer,
                 "sources": text_result.get("sources", []),
-                "thinking_steps": [
-                    f"[Image analysis] {mm_result['answer']}",
-                    f"[Text analysis ({text_label})] {text_result['answer']}",
-                ],
+                "thinking_steps": [],
             }
         else:
             engine_fn = get_engine(label)

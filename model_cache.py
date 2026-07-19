@@ -6,7 +6,10 @@ Caching the instance here means it's loaded ONCE per Flask process and
 reused across all subsequent requests — making repeat queries nearly instant.
 """
 
+import threading
+
 _embed_models: dict = {}
+_mistral_embedding_lock = threading.RLock()
 
 # Decoder-only models like microsoft/harrier-oss-v1-270m require a task
 # instruction prefix on queries (but NOT on documents) for best retrieval.
@@ -31,8 +34,23 @@ def get_embed_model(model_name: str):
         if model_name == Config.MISTRAL_EMBED_MODEL:
             from llama_index.embeddings.mistralai import MistralAIEmbedding
 
+            class SerializedMistralAIEmbedding(MistralAIEmbedding):
+                """Prevent overlapping embedding calls across Flask threads."""
+
+                def _get_query_embedding(self, query, *args, **kwargs):
+                    with _mistral_embedding_lock:
+                        return super()._get_query_embedding(query, *args, **kwargs)
+
+                def _get_text_embedding(self, text, *args, **kwargs):
+                    with _mistral_embedding_lock:
+                        return super()._get_text_embedding(text, *args, **kwargs)
+
+                def _get_text_embeddings(self, texts, *args, **kwargs):
+                    with _mistral_embedding_lock:
+                        return super()._get_text_embeddings(texts, *args, **kwargs)
+
             print(f"[model_cache] Creating Mistral embedding client: {model_name} ...")
-            _embed_models[model_name] = MistralAIEmbedding(
+            _embed_models[model_name] = SerializedMistralAIEmbedding(
                 model_name=model_name,
                 api_key=Config.MISTRAL_API_KEY,
                 embed_batch_size=Config.EMBED_BATCH_SIZE,

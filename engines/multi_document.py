@@ -414,6 +414,7 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
             is_function_calling_model=False,
             context_window=Config.GROQ_CONTEXT_WINDOW,
             max_tokens=Config.ANSWER_MAX_TOKENS,
+            additional_kwargs={"reasoning_effort": "none"},
         )
 
     embed_model = model_cache.get_embed_model(Config.EMBED_MODEL)

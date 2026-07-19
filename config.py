@@ -84,7 +84,9 @@ class Config:
     # Overlap ensures formulas and sentences that span chunk boundaries
     # are captured in both neighbouring chunks.
     CHUNK_OVERLAP = _int_env("CHUNK_OVERLAP", 64)
-    EMBED_BATCH_SIZE = _int_env("EMBED_BATCH_SIZE", 16)
+    # With Mistral's 1-RPS limit, larger sequential batches reduce request count.
+    # 32 x 512-token chunks stays near the API's documented per-request token cap.
+    EMBED_BATCH_SIZE = _int_env("EMBED_BATCH_SIZE", 32)
     PRELOAD_EMBED_MODEL = _bool_env("PRELOAD_EMBED_MODEL", True)
     # Retrieve the top-k most relevant chunks for the LLM to read.
     SIMILARITY_TOP_K = 8

@@ -6,7 +6,7 @@ import functools
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-TEXT_EXTENSIONS = {".txt", ".pdf", ".html", ".md"}
+TEXT_EXTENSIONS = {".txt", ".pdf", ".html", ".md", ".csv", ".xlsx"}
 
 
 def is_rate_limit_error(exc):

@@ -148,7 +148,12 @@ body {
   border: 1px solid var(--card-border);
   border-radius: 10px;
   padding: .7rem .85rem;
+  position: relative;
   transition: border-color .2s;
+}
+
+.mode-card.mode-blocked {
+  border-style: dashed;
 }
 
 .mode-card.active {
@@ -906,5 +911,20 @@ html[data-theme="dark"] .answer-content h1, html[data-theme="dark"] .answer-cont
 html[data-theme="light"] .answer-content h1, html[data-theme="light"] .answer-content h2, html[data-theme="light"] .answer-content h3, html:not([data-theme]) .answer-content h1, html:not([data-theme]) .answer-content h2, html:not([data-theme]) .answer-content h3 { font-size: 2.25rem; border: 0; background: transparent; box-shadow: none; }
 html[data-theme="dark"] .answer-content .answer-title { font-size: 2.25rem !important; color: #fbdfaf; }
 html[data-theme="light"] .answer-content .answer-title, html:not([data-theme]) .answer-content .answer-title { font-size: 2.25rem !important; color: #8f5c25; }
+
+/* Final contrast pass: answer text must remain legible in both themes. */
+html[data-theme="light"] .answer-content,
+html:not([data-theme]) .answer-content { color: #17212f; }
+html[data-theme="light"] .answer-content > p:first-child,
+html:not([data-theme]) .answer-content > p:first-child { color: #17212f; }
+html[data-theme="light"] .answer-content p,
+html[data-theme="light"] .answer-content li,
+html:not([data-theme]) .answer-content p,
+html:not([data-theme]) .answer-content li { color: #17212f; }
+html[data-theme="light"] .query-textarea,
+html:not([data-theme]) .query-textarea { color: #111827 !important; caret-color: #111827; }
+html[data-theme="dark"] .query-textarea { color: #ffffff !important; caret-color: #ffffff; background: #14111b !important; border-color: #8f8599 !important; }
+html[data-theme="dark"] .query-textarea::placeholder { color: #d8d1df; opacity: 1; }
+html[data-theme="dark"] .query-textarea:focus { border-color: #f1d49b !important; box-shadow: 0 0 0 3px rgba(241, 212, 155, .22) !important; }
 @media (min-width: 769px) { .chat-container:has(.welcome-splash:not([style*="display: none"])) { padding-bottom: 0; } }
 @media (max-width: 768px) { :root { --navbar-h: 68px; } .brand-mark { font-size: 1.3rem; } .app-navbar { padding: .5rem 1rem !important; } .app-navbar .brand-badge, #api-status { display: none !important; } .welcome-splash h1 { font-size: 2rem; } }

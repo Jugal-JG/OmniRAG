@@ -27,7 +27,13 @@ def _encode_image(image_path: Path) -> tuple[str, str]:
 def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
     client = Groq(api_key=Config.GROQ_API_KEY)
 
-    content = [{"type": "text", "text": query + MATH_FORMAT_INSTRUCTIONS}]
+    content = [{
+        "type": "text",
+        "text": (
+            f"{query}{MATH_FORMAT_INSTRUCTIONS}\n"
+            "Return only the final answer. Do not reveal analysis, reasoning, planning, or a thinking process."
+        ),
+    }]
 
     for fname in filenames:
         img_path = upload_dir / fname
@@ -45,6 +51,7 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
         model=Config.GROQ_VISION_LLM,
         messages=[{"role": "user", "content": content}],
         max_tokens=4096,
+        reasoning_effort="none",
     )
 
     answer = response.choices[0].message.content

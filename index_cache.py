@@ -45,7 +45,14 @@ def cache_key(file_paths: list[str], engine_name: str) -> str:
     # auto-invalidates old indexes (avoids stale vector mismatches).
     chunk_tag = f"c{Config.CHUNK_SIZE}o{Config.CHUNK_OVERLAP}"
     model_tag = Config.EMBED_MODEL.replace("/", "_")
-    return f"{engine_name}_{chunk_tag}_{model_tag}_{_file_hash(file_paths)}"
+    # v2 spreadsheets embed profiles/formulas/narrative cells, not every row.
+    # This tag prevents an old row-heavy spreadsheet index from being reused.
+    document_tag = (
+        "tabular2"
+        if any(Path(path).suffix.lower() in {".csv", ".xlsx"} for path in file_paths)
+        else "document1"
+    )
+    return f"{engine_name}_{chunk_tag}_{model_tag}_{document_tag}_{_file_hash(file_paths)}"
 
 
 def cache_dir(key: str) -> Path:
