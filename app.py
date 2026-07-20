@@ -452,7 +452,21 @@ def query():
                 model=Config.MISTRAL_LLM,
                 max_tokens=Config.MERGED_ANSWER_MAX_TOKENS,
             )
-            merged_answer = str(merge_llm.complete(merge_prompt)).strip()
+            try:
+                merged_answer = str(merge_llm.complete(merge_prompt)).strip()
+            except Exception as exc:
+                from utils import is_provider_failure
+                if not is_provider_failure(exc):
+                    raise
+                from llama_index.llms.google_genai import GoogleGenAI
+                logger.info("[merged] Mistral synthesis failed (%s); falling back to Gemini %s", type(exc).__name__, Config.GOOGLE_LLM)
+                merged_answer = str(GoogleGenAI(
+                    api_key=Config.GOOGLE_API_KEY,
+                    model=Config.GOOGLE_LLM,
+                    max_tokens=Config.MERGED_ANSWER_MAX_TOKENS,
+                    max_retries=Config.GOOGLE_MAX_RETRIES,
+                    is_function_calling_model=False,
+                ).complete(merge_prompt)).strip()
 
             # Strip <think>...</think> block if present
             import re

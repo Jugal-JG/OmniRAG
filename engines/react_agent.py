@@ -19,7 +19,7 @@ import model_cache
 import shared_vector_index
 import retrieval
 from config import Config
-from utils import format_source_nodes, with_retry
+from utils import format_source_nodes, is_provider_failure, with_retry
 
 
 def _run_async(coro):
@@ -89,7 +89,7 @@ def _make_llm(model: str, api_key: str | None = None) -> GoogleGenAI:
 def _model_unavailable(exc: Exception) -> bool:
     """A hard error meaning THIS model can't serve — worth trying the fallback."""
     s = str(exc).lower()
-    return any(
+    return is_provider_failure(exc) or any(
         k in s
         for k in ("429", "resource_exhausted", "quota", "404", "not found",
                   "unsupported", "permission", "unavailable", "503")
@@ -216,7 +216,7 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
 
     primary_model = Config.REACT_PRIMARY_LLM          # gemini-2.5-flash
     fallback_model = Config.GOOGLE_LLM                 # gemini-3.1-flash-lite-preview
-    fallback_key = Config.GOOGLE_API_KEY2 or None
+    fallback_key = Config.GOOGLE_API_KEY2 or Config.GOOGLE_API_KEY
 
     # Attempt 1: primary key (GOOGLE_API_KEY) + primary model (gemini-2.5-flash)
     try:

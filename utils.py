@@ -9,9 +9,23 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 TEXT_EXTENSIONS = {".txt", ".pdf", ".html", ".md", ".csv", ".xlsx"}
 
 
-def is_rate_limit_error(exc):
+def is_provider_failure(exc: Exception) -> bool:
+    """Whether an LLM provider failed in a way an alternate provider can handle."""
     msg = str(exc).lower()
-    return "429" in msg or "rate limit" in msg or "too many requests" in msg or "quota" in msg
+    markers = (
+        "429", "413", "rate limit", "rate_limit", "too many requests",
+        "quota", "resource_exhausted", "tokens per minute", "tokens per day",
+        "requests per minute", "request too large", "payload too large",
+        "context length", "context window", "model unavailable", "unavailable",
+        "timeout", "timed out", "connection error", "502", "503", "504",
+        "internal server error", "malformed_response",
+    )
+    return any(marker in msg for marker in markers)
+
+
+def is_rate_limit_error(exc: Exception) -> bool:
+    """Backward-compatible name for provider failures eligible for fallback."""
+    return is_provider_failure(exc)
 
 
 def is_daily_quota_error(exc):

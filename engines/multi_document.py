@@ -27,6 +27,7 @@ import model_cache
 import shared_vector_index
 from answer_format import MATH_FORMAT_INSTRUCTIONS
 from config import Config
+from utils import is_provider_failure
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ def _is_rate_limit(exc: Exception) -> bool:
 
 
 def _should_fallback(exc: Exception) -> bool:
-    return _is_rate_limit(exc) or _is_retryable(exc)
+    return is_provider_failure(exc) or _is_retryable(exc)
 
 
 class FallbackQueryEngine:
@@ -482,7 +483,18 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
 
     logger.info("[multi-doc] Parallel agents: %s", [doc_agent.filename for doc_agent in doc_agents])
 
-    answer = _run_async(_invoke_agent(top_agent, query))
+    try:
+        answer = _run_async(_invoke_agent(top_agent, query))
+    except Exception as exc:
+        if not (is_provider_failure(exc) and fallback_answer_llm is not None):
+            raise
+        logger.info(
+            "[multi-doc] Gemini coordinator failed (%s); using Groq direct synthesis fallback",
+            type(exc).__name__,
+        )
+        results = _run_async(_query_document_agents(doc_agents, query))
+        result_holder["results"] = results
+        answer = _run_async(_synthesize_from_results(fallback_answer_llm, query, results))
     if not answer.strip() and result_holder.get("results"):
         logger.info("[multi-doc] Coordinator returned empty text; using direct synthesis fallback")
         answer = _run_async(
