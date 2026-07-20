@@ -20,7 +20,7 @@ class Config:
 
     MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")          # Gemini models (primary)
-    GOOGLE_API_KEY2 = os.getenv("GOOGLE_API_KEY2", "")        # ReAct fallback key (second account)
+    GOOGLE_API_KEY2 = os.getenv("GOOGLE_API_KEY2", "")        # Multimodal key; ReAct fallback key (second account)
     GOOGLE_API_KEY_GEMMA = os.getenv("GOOGLE_API_KEY_GEMMA", "")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
@@ -74,6 +74,8 @@ class Config:
     # on GOOGLE_API_KEY2 (second Google account).
     REACT_PRIMARY_LLM = os.getenv("REACT_PRIMARY_LLM", "gemini-2.5-flash")
     GROQ_LLM = os.getenv("GROQ_LLM", "qwen/qwen3.6-27b")
+    # Kept for backward-compatible environment files; image analysis uses
+    # GOOGLE_LLM with GOOGLE_API_KEY2 in engines/multimodal.py.
     GROQ_VISION_LLM = os.getenv("GROQ_VISION_LLM", "qwen/qwen3.6-27b")
     GROQ_ROUTER_LLM = os.getenv("GROQ_ROUTER_LLM", "qwen/qwen3.6-27b")
     GROQ_SUBQUESTION_LLM = os.getenv("GROQ_SUBQUESTION_LLM", "qwen/qwen3.6-27b")

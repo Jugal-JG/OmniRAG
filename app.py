@@ -8,6 +8,7 @@
 
 import json
 import logging
+import re
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -140,6 +141,15 @@ def _make_standalone(query_text: str) -> str:
     fully self-contained question so similarity search isn't polluted by history.
     """
     query_text = normalize_reference_typos(query_text)
+    # A request that explicitly names the selected document/report is already
+    # self-contained.  Do not let conversation history replace its intent with
+    # a previous calculation or fact lookup.
+    if re.search(
+        r"\b(?:summari[sz]e|summary|overview|describe)\b.*\b(?:document|report|pdf|file)\b",
+        query_text,
+        flags=re.IGNORECASE,
+    ):
+        return query_text
     history = _load_history(_session_dir())
     if not history:
         return query_text
@@ -179,7 +189,6 @@ def _make_standalone(query_text: str) -> str:
         )
         reformulated = resp.choices[0].message.content.strip()
         # Strip <think>...</think> block if present (e.g. from Qwen reasoning model)
-        import re
         if "<think>" in reformulated:
             reformulated = re.sub(r"<think>.*?</think>", "", reformulated, flags=re.DOTALL).strip()
             # If the closing tag was cut off due to max_tokens:

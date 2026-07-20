@@ -1,63 +1,66 @@
-"""
-Multi-Modal engine — mirrors Multi_Modal.ipynb.
-LLM: Groq / Qwen3.6-27b (vision)
-Handles image analysis; returns structured description.
-"""
+"""Multimodal image analysis powered by Gemini 3.1 Flash-Lite."""
 
-import base64
 from pathlib import Path
 
-from groq import Groq
+from google import genai
+from google.genai import types
 
+from answer_format import MATH_FORMAT_INSTRUCTIONS
 from config import Config
 from utils import with_retry
-from answer_format import MATH_FORMAT_INSTRUCTIONS
 
 
-def _encode_image(image_path: Path) -> tuple[str, str]:
-    """Return (base64_data, mime_type)."""
-    suffix = image_path.suffix.lower()
-    mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif"}
-    mime = mime_map.get(suffix, "image/png")
-    data = base64.b64encode(image_path.read_bytes()).decode("ascii").strip()
-    return data, mime
+_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+}
 
 
 @with_retry
 def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
-    client = Groq(api_key=Config.GROQ_API_KEY)
-
-    content = [{
-        "type": "text",
-        "text": (
-            f"{query}{MATH_FORMAT_INSTRUCTIONS}\n"
-            "Return only the final answer. Do not reveal analysis, reasoning, planning, or a thinking process."
-        ),
-    }]
-
-    for fname in filenames:
-        img_path = upload_dir / fname
-        if not img_path.exists():
-            continue
-        b64, mime = _encode_image(img_path)
-        content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}"},
-            }
+    """Analyze all selected images with the dedicated Gemini vision key."""
+    if not Config.GOOGLE_API_KEY2:
+        raise RuntimeError(
+            "Multimodal analysis requires GOOGLE_API_KEY2 to be configured."
         )
 
-    response = client.chat.completions.create(
-        model=Config.GROQ_VISION_LLM,
-        messages=[{"role": "user", "content": content}],
-        max_tokens=4096,
-        reasoning_effort="none",
+    parts = [
+        types.Part.from_text(
+            text=(
+                f"{query}\n\n"
+                "Answer at the level of detail requested by the user. For a request "
+                "to explain or summarize in detail, identify the visible elements, "
+                "their relationships, and the image's overall meaning. "
+                "Do not reduce a detailed request to a one-sentence caption."
+                f"{MATH_FORMAT_INSTRUCTIONS}\n"
+                "Return only the final answer; do not reveal reasoning or planning."
+            )
+        )
+    ]
+    for filename in filenames:
+        image_path = upload_dir / filename
+        if not image_path.exists():
+            continue
+        parts.append(
+            types.Part.from_bytes(
+                data=image_path.read_bytes(),
+                mime_type=_MIME_TYPES.get(image_path.suffix.lower(), "image/png"),
+            )
+        )
+
+    client = genai.Client(api_key=Config.GOOGLE_API_KEY2)
+    response = client.models.generate_content(
+        model=Config.GOOGLE_LLM,
+        contents=parts,
+        config=types.GenerateContentConfig(
+            temperature=0,
+            max_output_tokens=Config.ANSWER_MAX_TOKENS,
+        ),
     )
+    answer = (response.text or "").strip()
+    if not answer:
+        raise RuntimeError("Gemini returned an empty image-analysis response.")
 
-    answer = response.choices[0].message.content
-
-    return {
-        "answer": answer,
-        "sources": [],
-        "thinking_steps": [],
-    }
+    return {"answer": answer, "sources": [], "thinking_steps": []}

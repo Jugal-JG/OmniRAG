@@ -48,7 +48,7 @@ The frontend sends a browser-generated `X-Omnirag-Session-Id` header. The backen
 | Router Engine | Overview or a mix of overview and exact facts | Groq selects summary or vector retrieval; Gemini fallback on Groq rate limits |
 | Sub-Question | Multi-part or cross-document questions | Groq decomposes into document-level questions; Gemini fallback |
 | Multi-Document Agent | Explicit multi-document mode | Per-document agents queried in parallel, then coordinated by Gemini |
-| Multi-Modal | Image-only questions | Groq vision model |
+| Multi-Modal | Image-only questions | Gemini 3.1 Flash-Lite via `GOOGLE_API_KEY2` |
 | ReAct Agent | Thinking mode | Gemini tool-using agent with document search tools |
 | Merged | Both images and text uploaded | Runs image and text analysis, then synthesizes a combined answer |
 
@@ -120,7 +120,6 @@ MISTRAL_LLM=mistral-large-latest
 GOOGLE_LLM=gemini-3.1-flash-lite-preview
 REACT_PRIMARY_LLM=gemini-2.5-flash
 GROQ_LLM=qwen/qwen3.6-27b
-GROQ_VISION_LLM=qwen/qwen3.6-27b
 GROQ_ROUTER_LLM=llama-3.3-70b-versatile
 GROQ_SUBQUESTION_LLM=llama-3.3-70b-versatile
 
@@ -130,7 +129,7 @@ SESSION_COOKIE_SAMESITE=None
 SESSION_COOKIE_SECURE=true
 ```
 
-`GOOGLE_API_KEY2` is optional and is used only as the ReAct engine’s secondary-key fallback. `COHERE_API_KEY` and the legacy Gemma variables are optional.
+`GOOGLE_API_KEY2` is required for multimodal image analysis and is also used as the ReAct engine’s secondary-key fallback. `COHERE_API_KEY` and the legacy Gemma variables are optional.
 
 ## API
 
