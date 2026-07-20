@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -80,11 +81,74 @@ def _markdown_table(rows: list[dict], columns: list[str]) -> str:
     return "\n".join([header, divider, *body])
 
 
+def _normalised_name(value: str) -> str:
+    """Normalize a header or phrase for schema-driven matching."""
+    value = value.lower()
+    return re.sub(r"[^a-z0-9]+", "", value)
+
+
+def _best_mentioned_column(query: str, columns: list[str]) -> str | None:
+    """Match the requested field to a real header, allowing small typos.
+
+    This is deliberately based on the workbook schema rather than a list of
+    known financial columns.  A request such as "highest yearly income",
+    "lowest credit score", or a misspelled custom header is resolved from the
+    headers in the uploaded file.
+    """
+    words = re.findall(r"[a-z0-9]+", query.lower())
+    matches: list[tuple[float, int, str]] = []
+    for column in columns:
+        header_words = re.findall(r"[a-z0-9]+", column.lower())
+        if not header_words:
+            continue
+        width = len(header_words)
+        header = _normalised_name(column)
+        for start in range(max(1, len(words) - width + 1)):
+            phrase = _normalised_name(" ".join(words[start:start + width]))
+            score = SequenceMatcher(None, header, phrase).ratio()
+            if score >= 0.82:
+                matches.append((score, len(header), column))
+    if not matches:
+        return None
+    # Longer headers win ties so a specific field beats a generic "income".
+    return max(matches, key=lambda item: (item[0], item[1]))[2]
+
+
+def _deterministic_extreme(query: str, schemas: list[dict], rows: list[dict]) -> dict | None:
+    """Answer obvious highest/lowest-column requests without an LLM planner."""
+    lowered = query.lower()
+    if not re.search(r"\b(?:highest|largest|maximum|max|lowest|smallest|minimum|min)\b", lowered):
+        return None
+    operation = "min" if re.search(r"\b(?:lowest|smallest|minimum|min)\b", lowered) else "max"
+    columns = list(dict.fromkeys(column for schema in schemas for column in schema["columns"]))
+    column = _best_mentioned_column(lowered, columns)
+    if column is None:
+        return None
+    numeric_rows = [(row, _number(row["values"].get(column))) for row in rows]
+    numeric_rows = [(row, value) for row, value in numeric_rows if value is not None]
+    if not numeric_rows:
+        return None
+    selected_row, value = (min(numeric_rows, key=lambda item: item[1]) if operation == "min" else max(numeric_rows, key=lambda item: item[1]))
+    identifier = next((key for key in ("id", "user_id", "user id") if key in selected_row["values"]), None)
+    subject = f"User ID **{selected_row['values'][identifier]}** " if identifier else "The matching row "
+    return {
+        "answer": (
+            f"{subject}has the exact {operation}imum **{column}**: "
+            f"**{value:,}** ({selected_row['file']}, {selected_row['sheet']} row {selected_row['row']})."
+        ),
+        "sources": [{"file": selected_row["file"], "text": f"{selected_row['sheet']} row {selected_row['row']}", "score": 1.0}],
+        "thinking_steps": ["Answered by scanning every numeric value in the local structured spreadsheet store."],
+    }
+
+
 def try_structured_query(query: str, filenames: list[str], upload_dir: Path) -> dict | None:
     """Return an exact SQLite-backed result, or None for semantic questions."""
     schemas, rows = structured_snapshot(filenames, upload_dir)
     if not schemas:
         return None
+    deterministic_result = _deterministic_extreme(query, schemas, rows)
+    if deterministic_result is not None:
+        return deterministic_result
     schema_text = json.dumps(schemas, ensure_ascii=False)
     prompt = f"""Classify and plan this spreadsheet question using only the supplied schema.
 Return JSON only. Use mode "structured" for exact row lookup, filtering, counting,

@@ -108,6 +108,9 @@ _SYSTEM_PROMPT = (
     "'equation 15', or 'eq. 15' refers to the expression labelled (15) in the\n"
     "excerpts — locate that label and report the corresponding expression. Only say\n"
     "you could not find it if no such label or content appears in the excerpts.\n\n"
+    "SPREADSHEET RULE: When the question asks for an exact spreadsheet value, row, "
+    "maximum, minimum, count, sum, or average, you MUST call the spreadsheet data "
+    "tool. Never calculate an aggregate from retrieved sample rows.\n\n"
     "NAMING RULE: If asked for an item's name, distinguish an explicit formal name\n"
     "from a descriptive name. If the document gives no formal title, say so briefly,\n"
     "then give the most precise descriptive name supported by the surrounding section,\n"
@@ -177,6 +180,11 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
                 f"===== Retrieved from {fname} =====\n{retrieval.format_context(nodes)}"
             )
         tools.append(_make_search_tool(fname, retriever, collected_sources))
+
+    from spreadsheet_tool import make_spreadsheet_query_tool
+    spreadsheet_tool = make_spreadsheet_query_tool(filenames, upload_dir)
+    if spreadsheet_tool is not None:
+        tools.append(spreadsheet_tool)
 
     if not collected_sources:
         raise RuntimeError(

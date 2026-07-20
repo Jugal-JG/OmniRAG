@@ -279,6 +279,10 @@ def _build_doc_agent(
             ),
         ),
     ]
+    from spreadsheet_tool import make_spreadsheet_query_tool
+    spreadsheet_tool = make_spreadsheet_query_tool([fname], upload_dir, name=f"{stem}_structured_data")
+    if spreadsheet_tool is not None:
+        tools.append(spreadsheet_tool)
 
     agent = FunctionAgent(
         name=stem,
@@ -288,6 +292,8 @@ def _build_doc_agent(
         system_prompt=(
             f"You are a specialized document agent for '{fname}'. "
             "Use the provided vector and summary tools before answering. "
+            "For exact spreadsheet values, filters, and aggregations, use the "
+            "structured spreadsheet tool rather than vector-search excerpts. "
             "Answer only from this document. For cross-document comparison requests, "
             "do not compare and do not refuse; summarize the facts, themes, and "
             "details from this one document that a coordinator can compare later."

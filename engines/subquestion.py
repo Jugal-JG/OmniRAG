@@ -36,6 +36,9 @@ SUBQUESTION_PROMPT = """Given a user question and a list of document tools, outp
 
 Rules:
 - Generate at most ONE sub-question per tool/document.
+- When a question asks for a CSV/XLSX maximum, minimum, count, sum, average,
+  filter, or exact row, send that part to the spreadsheet data tool. Do not
+  send aggregate questions to a document vector-search tool.
 - For broad questions about people, companies, impact, summaries, or comparisons, ask each document for the facts needed from that document.
 - Do not split one document into many dimensions unless absolutely required.
 - Use only tool names that appear in the tool list.
@@ -140,13 +143,22 @@ class _FallbackQueryEngine:
 
 
 def _make_tools(filenames: list[str], upload_dir: Path, llm, embed_model, fallback_llm=None):
+    # Use the shared hybrid retriever rather than Index.as_query_engine().
+    # Labelled references such as Formula (15) are primarily lexical lookups;
+    # the hybrid retriever explicitly finds the chunk containing "(15)".
+    import retrieval
+
     tools = []
     for fname in filenames:
         idx = _build_or_load_index(fname, upload_dir, llm, embed_model)
-        primary_qe = idx.as_query_engine(similarity_top_k=3, llm=llm)
+        primary_qe = retrieval.make_query_engine(
+            idx, similarity_top_k=Config.SIMILARITY_TOP_K, llm=llm
+        )
         qe = primary_qe
         if fallback_llm is not None:
-            fallback_qe = idx.as_query_engine(similarity_top_k=3, llm=fallback_llm)
+            fallback_qe = retrieval.make_query_engine(
+                idx, similarity_top_k=Config.SIMILARITY_TOP_K, llm=fallback_llm
+            )
             qe = _FallbackQueryEngine(primary_qe, fallback_qe, fname)
         tools.append(
             QueryEngineTool(
@@ -157,6 +169,10 @@ def _make_tools(filenames: list[str], upload_dir: Path, llm, embed_model, fallba
                 ),
             )
         )
+    from spreadsheet_tool import make_spreadsheet_query_tool
+    spreadsheet_tool = make_spreadsheet_query_tool(filenames, upload_dir)
+    if spreadsheet_tool is not None:
+        tools.append(spreadsheet_tool)
     return tools
 
 

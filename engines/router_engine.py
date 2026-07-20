@@ -155,7 +155,7 @@ def _build_or_load_indexes(file_paths: list[str], upload_dir: Path):
     return vector_index, summary_index
 
 
-def _make_router(vector_index, summary_index, llm):
+def _make_router(vector_index, summary_index, llm, filenames, upload_dir):
     import retrieval
 
     Settings.llm = llm
@@ -181,9 +181,14 @@ def _make_router(vector_index, summary_index, llm):
             "or main ideas. Do not choose it for exact values or labelled document items."
         ),
     )
+    tools = [summary_tool, vector_tool]
+    from spreadsheet_tool import make_spreadsheet_query_tool
+    spreadsheet_tool = make_spreadsheet_query_tool(filenames, upload_dir)
+    if spreadsheet_tool is not None:
+        tools.append(spreadsheet_tool)
     return RouterQueryEngine(
         selector=LLMSingleSelector.from_defaults(llm=llm),
-        query_engine_tools=[summary_tool, vector_tool],
+        query_engine_tools=tools,
         verbose=False,
     )
 
@@ -205,6 +210,15 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
     llm = _make_groq_llm()
     Settings.llm = llm
     logger.info("[router_engine] LLM=OpenAILike/Groq (%s)", Config.GROQ_ROUTER_LLM)
+
+    # Exact workbook-only requests bypass semantic routing.  This also works
+    # when other selected files are PDFs because structured_snapshot now keeps
+    # the spreadsheet subset instead of rejecting the entire selection.
+    from spreadsheet_query import try_structured_query
+    structured_result = try_structured_query(query, filenames, upload_dir)
+    if structured_result is not None:
+        logger.info("[router_engine] answered exact spreadsheet query from SQLite")
+        return structured_result
 
     # Broad workbook questions can use the compact sheet profiles immediately,
     # without waiting for the background vector job.
@@ -240,7 +254,7 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
 
     query_start = time.perf_counter()
     try:
-        response = _make_router(vector_index, summary_index, llm).query(
+        response = _make_router(vector_index, summary_index, llm, filenames, upload_dir).query(
             _formatted_query(query)
         )
     except Exception as exc:
@@ -248,7 +262,7 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
         if not is_rate_limit_error(exc):
             raise
         logger.info("[router_engine] Groq rate limit; falling back to Gemini %s", Config.GOOGLE_LLM)
-        response = _make_router(vector_index, summary_index, _make_gemini_llm()).query(
+        response = _make_router(vector_index, summary_index, _make_gemini_llm(), filenames, upload_dir).query(
             _formatted_query(query)
         )
     selected = getattr(response, "metadata", {}).get("selected_tool", "")

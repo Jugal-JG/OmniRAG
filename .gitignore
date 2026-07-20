@@ -155,6 +155,10 @@ cython_debug/
 # Project Specific
 uploads/
 cache/
+outputs/
+*.pptx
+*.csv
+*.xlsx
 *.pdf
 *.txt
 *.png

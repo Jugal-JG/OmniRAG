@@ -269,12 +269,19 @@ def profile_context(filenames: list[str], upload_dir: Path) -> str:
 
 
 def structured_snapshot(filenames: list[str], upload_dir: Path) -> tuple[list[dict], list[dict]]:
-    """Return validated schemas and rows for the selected ready spreadsheets."""
-    paths = [upload_dir / name for name in filenames]
-    if not paths or any(
-        path.suffix.lower() not in SPREADSHEET_EXTENSIONS or not is_ready(path)
-        for path in paths
-    ):
+    """Return validated rows for ready spreadsheets among the selected files.
+
+    A document set may legitimately contain a PDF alongside a workbook.  The
+    previous all-or-nothing check discarded the workbook in that case, forcing
+    callers to answer numeric questions from vector-search samples instead of
+    the complete local table.
+    """
+    paths = [
+        upload_dir / name
+        for name in filenames
+        if (upload_dir / name).suffix.lower() in SPREADSHEET_EXTENSIONS
+    ]
+    if not paths or any(not is_ready(path) for path in paths):
         return [], []
     hashes = [file_hash(path) for path in paths]
     placeholders = ",".join("?" for _ in hashes)

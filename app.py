@@ -390,6 +390,13 @@ def query():
     )
 
     standalone_query = _make_standalone(query_text)
+
+    # Compute an exact spreadsheet aggregate once at the boundary.  Agent
+    # engines still answer the document portions of a mixed request, but this
+    # verified result prevents a sampled vector row from being presented as a
+    # workbook-wide maximum/minimum.
+    from spreadsheet_query import try_structured_query
+    verified_spreadsheet_result = try_structured_query(standalone_query, filenames, upload_dir)
     standalone_note = (
         f" (reformulated: '{standalone_query}')"
         if standalone_query != query_text
@@ -480,6 +487,12 @@ def query():
         )
 
     answer = repair_bare_latex(result.get("answer", ""))
+    if verified_spreadsheet_result is not None:
+        verified_answer = verified_spreadsheet_result["answer"]
+        if verified_answer not in answer:
+            answer = f"{verified_answer}\n\n{answer}".strip()
+            existing_sources = result.get("sources", [])
+            result["sources"] = verified_spreadsheet_result.get("sources", []) + existing_sources
     result["answer"] = answer
     logger.info("[query] completed engine=%s answer_chars=%s", label, len(answer))
     _save_to_history(query_text, answer[:600], routing["approach"])
