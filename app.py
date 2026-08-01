@@ -9,7 +9,9 @@
 import json
 import logging
 import re
+import shutil
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -44,6 +46,16 @@ app.config["MAX_CONTENT_LENGTH"] = Config.MAX_CONTENT_LENGTH
 app.config["SESSION_COOKIE_SAMESITE"] = Config.SESSION_COOKIE_SAMESITE
 app.config["SESSION_COOKIE_SECURE"] = Config.SESSION_COOKIE_SECURE
 CORS(app, origins=Config.CORS_ORIGINS, supports_credentials=True)
+
+
+@app.errorhandler(413)
+def payload_too_large(_exc):
+    # Flask's default 413 page is HTML, which breaks frontend res.json() parsing.
+    limit_mb = Config.MAX_CONTENT_LENGTH // (1024 * 1024)
+    return (
+        jsonify({"success": False, "error": f"Upload too large — max {limit_mb} MB per request."}),
+        413,
+    )
 
 ALLOWED_EXTENSIONS = {
     ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".html", ".md",
@@ -259,43 +271,29 @@ def _preindex_basic_rag(filenames: list[str], upload_dir: Path):
         logger.warning("[preindex] Background indexing failed (%s), will retry on first query", exc)
 
 
-@app.route("/upload", methods=["POST"])
-def upload():
-    upload_dir = _session_dir()
-    uploaded = []
-    errors = []
-    warnings = []
-    spreadsheet_status = {}
+def _process_saved_file(file_path: Path, errors: list, warnings: list, spreadsheet_status: dict):
+    """Post-save ingestion for one already-written upload (spreadsheet + scan check)."""
+    filename = file_path.name
+    if file_path.suffix.lower() in {".csv", ".xlsx"}:
+        try:
+            from doc_loader import ingest_spreadsheet
 
-    for f in request.files.getlist("files"):
-        if not f or not f.filename:
-            continue
-        if not allowed_file(f.filename):
-            errors.append(f"{f.filename} — unsupported file type")
-            continue
-        filename = secure_filename(f.filename)
-        file_path = upload_dir / filename
-        f.save(str(file_path))
-        uploaded.append(filename)
-        if file_path.suffix.lower() in {".csv", ".xlsx"}:
-            try:
-                from doc_loader import ingest_spreadsheet
+            row_count = ingest_spreadsheet(file_path)
+            spreadsheet_status[filename] = {
+                "structured": "ready",
+                "rows": row_count,
+                "semantic": "indexing",
+            }
+        except Exception as exc:
+            logger.exception("[upload] Spreadsheet ingestion failed for %s", filename)
+            errors.append(f"{filename} — spreadsheet parsing failed: {exc}")
+            spreadsheet_status[filename] = {"structured": "failed", "error": str(exc)}
+    if _looks_like_scanned_pdf(file_path):
+        warnings.append(f"{filename} looks image-based/scanned, so answers may take longer.")
 
-                row_count = ingest_spreadsheet(file_path)
-                spreadsheet_status[filename] = {
-                    "structured": "ready",
-                    "rows": row_count,
-                    "semantic": "indexing",
-                }
-            except Exception as exc:
-                logger.exception("[upload] Spreadsheet ingestion failed for %s", filename)
-                errors.append(f"{filename} — spreadsheet parsing failed: {exc}")
-                spreadsheet_status[filename] = {"structured": "failed", "error": str(exc)}
-        if _looks_like_scanned_pdf(file_path):
-            warnings.append(
-                f"{filename} looks image-based/scanned, so answers may take longer."
-            )
 
+def _finalize_upload(upload_dir: Path, uploaded: list, errors: list, warnings: list, spreadsheet_status: dict):
+    """Shared response tail for /upload and /upload-chunk: history reset + preindex."""
     existing = _uploaded_files(upload_dir)
     combined = list(dict.fromkeys(existing + uploaded))
 
@@ -320,6 +318,138 @@ def upload():
             "spreadsheets": spreadsheet_status,
         }
     )
+
+
+@app.route("/upload", methods=["POST"])
+def upload():
+    upload_dir = _session_dir()
+    uploaded = []
+    errors = []
+    warnings = []
+    spreadsheet_status = {}
+
+    for f in request.files.getlist("files"):
+        if not f or not f.filename:
+            continue
+        if not allowed_file(f.filename):
+            errors.append(f"{f.filename} — unsupported file type")
+            continue
+        filename = secure_filename(f.filename)
+        file_path = upload_dir / filename
+        f.save(str(file_path))
+        uploaded.append(filename)
+        _process_saved_file(file_path, errors, warnings, spreadsheet_status)
+
+    return _finalize_upload(upload_dir, uploaded, errors, warnings, spreadsheet_status)
+
+
+CHUNK_STAGING_DIR = ".chunks"
+CHUNK_TTL_SECONDS = 3600  # sweep chunk dirs abandoned by a closed browser
+
+
+def _sweep_stale_chunks(upload_dir: Path) -> None:
+    """Remove chunk-staging dirs older than the TTL so aborted uploads can't leak disk."""
+    staging_root = upload_dir / CHUNK_STAGING_DIR
+    if not staging_root.is_dir():
+        return
+    cutoff = time.time() - CHUNK_TTL_SECONDS
+    for d in staging_root.iterdir():
+        try:
+            if d.is_dir() and d.stat().st_mtime < cutoff:
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass
+
+
+@app.route("/upload-chunk", methods=["POST"])
+def upload_chunk():
+    """Receive one ≤4 MB slice of a larger file; reassemble on the final chunk.
+
+    Lets uploads exceed the Vercel proxy's ~4.5 MB per-request body cap while
+    the HF Space stays private (every chunk still flows through the token-
+    injecting proxy). The reassembled file is capped at MAX_CONTENT_LENGTH.
+    """
+    upload_dir = _session_dir()
+
+    raw_name = request.form.get("filename", "")
+    try:
+        chunk_index = int(request.form.get("chunk_index", ""))
+        total_chunks = int(request.form.get("total_chunks", ""))
+    except ValueError:
+        return jsonify({"success": False, "error": "Invalid chunk metadata."}), 400
+
+    # upload_id must be a UUID: this both validates the client and guarantees
+    # the staging path can't traverse outside the chunk directory.
+    try:
+        upload_id = str(uuid.UUID(str(request.form.get("upload_id", ""))))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid upload id."}), 400
+
+    if not raw_name or chunk_index < 0 or total_chunks < 1 or chunk_index >= total_chunks:
+        return jsonify({"success": False, "error": "Invalid chunk metadata."}), 400
+
+    filename = secure_filename(raw_name)
+    if not filename or not allowed_file(filename):
+        return jsonify({"success": False, "error": f"{raw_name} — unsupported file type"}), 400
+
+    chunk = request.files.get("chunk")
+    if not chunk:
+        return jsonify({"success": False, "error": "Missing chunk data."}), 400
+
+    if chunk_index == 0:
+        _sweep_stale_chunks(upload_dir)
+
+    staging = upload_dir / CHUNK_STAGING_DIR / upload_id
+    staging.mkdir(parents=True, exist_ok=True)
+    # Zero-pad so lexical sort == numeric order when reassembling.
+    chunk.save(str(staging / f"{chunk_index:06d}"))
+
+    # More chunks to come — acknowledge and wait.
+    if chunk_index < total_chunks - 1:
+        return jsonify({"success": True, "received": chunk_index, "pending": True})
+
+    # Final chunk: verify completeness, enforce the size cap, then reassemble.
+    parts = sorted(staging.glob("[0-9]" * 6))
+    if len(parts) != total_chunks:
+        shutil.rmtree(staging, ignore_errors=True)
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": f"{filename} — upload incomplete "
+                    f"({len(parts)}/{total_chunks} chunks received); please retry.",
+                }
+            ),
+            400,
+        )
+
+    total_size = sum(p.stat().st_size for p in parts)
+    if total_size > Config.MAX_CONTENT_LENGTH:
+        shutil.rmtree(staging, ignore_errors=True)
+        limit_mb = Config.MAX_CONTENT_LENGTH // (1024 * 1024)
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": f"{filename} — file too large "
+                    f"({total_size // (1024 * 1024)} MB); max {limit_mb} MB.",
+                }
+            ),
+            413,
+        )
+
+    file_path = upload_dir / filename
+    with file_path.open("wb") as dest:
+        for p in parts:
+            with p.open("rb") as part:
+                shutil.copyfileobj(part, dest)
+    shutil.rmtree(staging, ignore_errors=True)
+
+    errors: list = []
+    warnings: list = []
+    spreadsheet_status: dict = {}
+    _process_saved_file(file_path, errors, warnings, spreadsheet_status)
+    return _finalize_upload(upload_dir, [filename], errors, warnings, spreadsheet_status)
 
 
 @app.route("/remove-file", methods=["POST"])

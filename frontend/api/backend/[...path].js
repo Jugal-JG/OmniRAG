@@ -10,6 +10,7 @@ const ALLOWED_PATHS = new Set([
   "healthz",
   "api-status",
   "upload",
+  "upload-chunk",
   "remove-file",
   "clear-files",
   "new-chat",

@@ -31,10 +31,6 @@ function getSessionId() {
   return sid;
 }
 
-function apiUrl(path) {
-  return `${API_BASE_URL}${path}`;
-}
-
 function apiFetch(path, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("X-Omnirag-Session-Id", getSessionId());
@@ -43,10 +39,41 @@ function apiFetch(path, options = {}) {
   // X-Omnirag-Session-Id header above, so cross-site cookies aren't needed.
   // Avoiding credentialed mode sidesteps fragile third-party-cookie handling
   // and the stricter preflight rules that go with it.
-  return fetch(apiUrl(path), {
+  return fetch(`${API_BASE_URL}${path}`, {
     ...options,
     headers,
   });
+}
+
+// The Vercel proxy in front of the private HF Space rejects request bodies
+// over ~4.5 MB before our function runs, so files larger than one chunk are
+// uploaded in ≤4 MB pieces and reassembled server-side. MAX_UPLOAD_BYTES is
+// the backend's limit on the final reassembled file.
+const UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;    // per-request cap (< Vercel's ~4.5 MB)
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;     // reassembled-file cap (Flask MAX_CONTENT_LENGTH)
+
+function formatBytes(n) {
+  return n >= 1024 * 1024 ? `${(n / (1024 * 1024)).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`;
+}
+
+/**
+ * Parse a backend response as JSON, translating non-JSON error pages
+ * (Vercel 413s, gateway 502/503s, Flask HTML error pages) into readable
+ * errors instead of "Unexpected token '<'".
+ */
+async function readJsonResponse(res) {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (res.status === 413) {
+      throw new Error(`file too large — the server accepts at most ${formatBytes(MAX_UPLOAD_BYTES)} per upload`);
+    }
+    if ([502, 503, 504].includes(res.status)) {
+      throw new Error("the backend is unreachable or still waking up — try again in a moment");
+    }
+    throw new Error(`the server returned an unexpected ${res.status} response`);
+  }
 }
 
 /* ── State ────────────────────────────────────────────────────────────────── */
@@ -118,7 +145,7 @@ function showToast(msg, type = "success") {
 async function loadApiStatus() {
   try {
     const res = await apiFetch("/api-status");
-    const data = await res.json();
+    const data = await readJsonResponse(res);
     const container = document.getElementById("api-status");
     const labels = { mistral: "Mistral", groq: "Groq", google: "Gemini" };
     container.innerHTML = Object.entries(labels).map(([k, label]) =>
@@ -187,7 +214,7 @@ async function removeFile(fname) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: fname }),
     });
-    const data = await res.json();
+    const data = await readJsonResponse(res);
     if (data.success) {
       syncUploadedFiles(data.files);
       renderFileList();
@@ -198,14 +225,65 @@ async function removeFile(fname) {
   }
 }
 
+// Upload one large file as a sequence of ≤4 MB chunks. The backend stages the
+// chunks and reassembles them once the final one arrives; that final response
+// carries the updated file list, which we return to the caller.
+async function uploadFileInChunks(file) {
+  const uploadId = crypto.randomUUID();
+  const totalChunks = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_BYTES));
+  let data = null;
+
+  for (let index = 0; index < totalChunks; index++) {
+    const start = index * UPLOAD_CHUNK_BYTES;
+    const blob = file.slice(start, start + UPLOAD_CHUNK_BYTES);
+
+    const formData = new FormData();
+    formData.append("upload_id", uploadId);
+    formData.append("filename", file.name);
+    formData.append("chunk_index", String(index));
+    formData.append("total_chunks", String(totalChunks));
+    formData.append("chunk", blob, file.name);
+
+    const res = await apiFetch("/upload-chunk", { method: "POST", body: formData });
+    data = await readJsonResponse(res);
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || `upload failed at chunk ${index + 1}/${totalChunks} (${res.status})`);
+    }
+  }
+  return data;
+}
+
 async function uploadFiles(files) {
-  const formData = new FormData();
-  files.forEach(f => formData.append("files", f));
+  // Reject files over the backend's reassembled-file limit up front, rather
+  // than uploading every chunk only to have the server reject the last one.
+  const oversized = files.filter(f => f.size > MAX_UPLOAD_BYTES);
+  if (oversized.length) {
+    showToast(
+      `Skipped (over the ${formatBytes(MAX_UPLOAD_BYTES)} upload limit): ${oversized.map(f => f.name).join(", ")}`,
+      "danger"
+    );
+    files = files.filter(f => f.size <= MAX_UPLOAD_BYTES);
+    if (!files.length) return;
+  }
 
   try {
-    const res = await apiFetch("/upload", { method: "POST", body: formData });
-    const data = await res.json();
-    if (data.success) {
+    let data = null;
+    for (const file of files) {
+      if (file.size > UPLOAD_CHUNK_BYTES) {
+        // Too big for a single Vercel request — stream it in chunks.
+        data = await uploadFileInChunks(file);
+      } else {
+        // Small enough to send in one request via the existing /upload route.
+        const formData = new FormData();
+        formData.append("files", file);
+        const res = await apiFetch("/upload", { method: "POST", body: formData });
+        data = await readJsonResponse(res);
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || `upload was rejected (${res.status})`);
+        }
+      }
+    }
+    if (data?.success) {
       syncUploadedFiles(data.files, true);
       renderFileList();
       if (data.errors?.length) showToast(`${data.errors[0]}`, "warning");
@@ -548,7 +626,7 @@ async function sendQuery() {
       signal: abortController.signal,
     });
 
-    const data = await res.json();
+    const data = await readJsonResponse(res);
     removeThinkingBubble();
 
     if (!res.ok || data.error) {
@@ -591,6 +669,24 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+// GFM enables tables/strikethrough; breaks makes single newlines from LLM
+// answers render as line breaks instead of gluing sentences together.
+if (typeof marked !== "undefined") {
+  marked.use({ gfm: true, breaks: true });
+}
+
+/**
+ * Heuristic: does the text between two $…$ delimiters actually look like
+ * LaTeX?  Guards against a stray literal "$" pairing with a later one and
+ * swallowing plain prose into a fake math span.
+ */
+function looksLikeMath(body) {
+  const trimmed = body.trim();
+  if (!trimmed) return false;
+  if (/[\\^_{}=<>]/.test(trimmed)) return true;        // \frac, x^2, a_{i}, =, <
+  return /^[A-Za-z][A-Za-z0-9]{0,2}$/.test(trimmed);   // single symbol: $n$, $x1$
+}
+
 function renderMarkdown(text) {
   try {
     // Protect monetary amounts before interpreting $...$ as LaTeX. Without this,
@@ -611,6 +707,7 @@ function renderMarkdown(text) {
     // expression as a unique placeholder, run marked on the safe remainder,
     // then splice the original LaTeX back in so KaTeX finds it untouched.
     const mathBlocks = [];
+    const literalBlocks = [];
 
     function stash(match) {
       const idx = mathBlocks.length;
@@ -619,18 +716,37 @@ function renderMarkdown(text) {
       return `OMNIRAGMATHBLOCK${idx}END`;
     }
 
+    // Non-math dollar spans are stashed too, but restored inside a .no-math
+    // span so KaTeX's auto-render can't re-pair the $ signs at the DOM stage.
+    function stashLiteral(match) {
+      const idx = literalBlocks.length;
+      literalBlocks.push(match);
+      return `OMNIRAGLITERALBLOCK${idx}END`;
+    }
+
     // Order matters: extract $$...$$ display math before $...$ inline math.
+    // Inline math must stay on one line — otherwise a stray "$" pairs with a
+    // later one and swallows entire sentences into a fake math span.
     let safe = currencySafe
-      .replace(/\$\$([\s\S]*?)\$\$/g, stash)           // $$...$$ block
-      .replace(/\$([^\$\n][^\$]*?)\$/g, stash)          // $...$ inline (no newlines)
-      .replace(/\\\[([\s\S]*?)\\\]/g, stash)             // \[...\] block
-      .replace(/\\\(([\s\S]*?)\\\)/g, stash);            // \(...\) inline
+      .replace(/\$\$([\s\S]*?)\$\$/g, stash)                                  // $$...$$ block
+      .replace(/\$([^\$\n][^\$\n]*?)\$/g,
+        (match, inner) => (looksLikeMath(inner) ? stash(match) : stashLiteral(match)))
+      .replace(/\\\[([\s\S]*?)\\\]/g, stash)                                   // \[...\] block
+      .replace(/\\\(([\s\S]*?)\\\)/g, stash);                                  // \(...\) inline
 
     // ── Step 2: Run marked on the math-free text ───────────────────────────
     let html = marked.parse(safe);
 
     // ── Step 3: Restore original math expressions ──────────────────────────
-    html = html.replace(/OMNIRAGMATHBLOCK(\d+)END/g, (_, i) => mathBlocks[+i]);
+    // HTML-escape the raw LaTeX: "<" or "&" inside math (e.g. $x < y$) would
+    // otherwise be parsed as markup on innerHTML insertion and silently eat
+    // the rest of the answer. The browser decodes the entities back to plain
+    // text, so KaTeX still sees the original characters.
+    html = html.replace(/OMNIRAGMATHBLOCK(\d+)END/g, (_, i) => escapeHtml(mathBlocks[+i]));
+    html = html.replace(
+      /OMNIRAGLITERALBLOCK(\d+)END/g,
+      (_, i) => `<span class="no-math">${escapeHtml(literalBlocks[+i])}</span>`
+    );
     html = html.replace(
       /OMNIRAGCURRENCYBLOCK(\d+)END/g,
       (_, i) => `<span class="no-math currency-amount">${escapeHtml(currencyBlocks[+i])}</span>`

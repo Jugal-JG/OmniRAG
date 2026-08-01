@@ -181,6 +181,19 @@ the Space. It is used only by the Vercel Function and is never sent to the
 browser. The frontend build routes production requests to `/api/backend`; do
 not set `OMNIRAG_API_BASE_URL` to the private `.hf.space` URL.
 
+#### Large uploads (over ~4.5 MB)
+
+Vercel Functions cap request bodies at ~4.5 MB. Rather than expose the Space,
+the frontend splits any file larger than 4 MB into ≤4 MB chunks and POSTs them
+sequentially to `/upload-chunk`; the backend stages the chunks per session and
+reassembles them once the final one arrives. Every chunk still travels through
+the token-injecting `/api/backend` proxy, so **the Space stays private** and no
+extra configuration is needed.
+
+The reassembled file is capped at `MAX_CONTENT_LENGTH` (50 MB by default); raise
+that in [config.py](config.py) if you need larger files. Files 4 MB and under
+still go through the single-request `/upload` route unchanged.
+
 ## Repository layout
 
 ```text
@@ -216,6 +229,10 @@ uploads/                  Local session uploads (ignored by Git)
 **Formula does not render** — answers must contain valid `$...$`, `$$...$$`, `\(...\)`, or `\[...\]` delimiters. OmniRAG asks every engine for LaTeX; malformed source text can still require a follow-up request.
 
 **Vercel cannot call the API** — check `HF_SPACE_URL` and `HF_SPACE_READ_TOKEN` in Vercel, then inspect the `/api/backend/api-status` function response. Do not configure a browser-visible direct private HF URL.
+
+**Upload fails with "file too large"** — the file exceeds `MAX_CONTENT_LENGTH` (50 MB by default). Files 4–50 MB are chunked automatically (see "Large uploads"); raise the limit in [config.py](config.py) for larger files.
+
+**Upload fails with "upload incomplete … please retry"** — a chunk was lost mid-upload (usually a flaky connection). Re-drop the file; only the failed file needs re-uploading.
 
 ## License
 
