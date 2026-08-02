@@ -7,6 +7,7 @@
 # event loop without needing nest_asyncio.
 
 import json
+import hashlib
 import logging
 import re
 import shutil
@@ -16,7 +17,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, send_from_directory, session
+from flask import Flask, Response, g, jsonify, render_template, request, send_from_directory, session
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -70,6 +71,56 @@ router = QueryRouter()
 _preindex_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="preindex")
 
 
+def _google_credential() -> str:
+    """Read the Google ID token without colliding with HF's bearer token."""
+    return (request.headers.get("X-Omnirag-Auth") or "").strip()
+
+
+def _verify_google_credential(credential: str) -> dict:
+    if not Config.GOOGLE_OAUTH_CLIENT_ID:
+        raise RuntimeError("GOOGLE_OAUTH_CLIENT_ID is not configured")
+
+    from google.auth.transport.requests import Request as GoogleRequest
+    from google.oauth2 import id_token
+
+    claims = id_token.verify_oauth2_token(
+        credential,
+        GoogleRequest(),
+        Config.GOOGLE_OAUTH_CLIENT_ID,
+    )
+    if not claims.get("sub") or claims.get("email_verified") is not True:
+        raise ValueError("Google account is not verified")
+    return claims
+
+
+@app.before_request
+def authenticate_request():
+    """Require Google authentication for every account-data API route."""
+    if request.method == "OPTIONS":
+        return None
+    if request.endpoint in {"static", "index", "login", "config_js", "healthz"}:
+        return None
+    if not Config.AUTH_REQUIRED:
+        g.auth_user = {
+            "sub": _client_session_id(),
+            "email": "local@omnirag.test",
+            "name": "Local user",
+        }
+        return None
+
+    credential = _google_credential()
+    if not credential:
+        return jsonify({"error": "Authentication required."}), 401
+    try:
+        g.auth_user = _verify_google_credential(credential)
+    except RuntimeError as exc:
+        logger.error("[auth] %s", exc)
+        return jsonify({"error": str(exc)}), 503
+    except Exception as exc:
+        logger.info("[auth] Google token rejected: %s", type(exc).__name__)
+        return jsonify({"error": "Your Google session is invalid or expired."}), 401
+
+
 def _preload_embedding_model() -> None:
     """Load embeddings during both Flask and Gunicorn application startup."""
     if not Config.PRELOAD_EMBED_MODEL:
@@ -99,8 +150,13 @@ def _client_session_id() -> str:
 
 
 def _session_dir() -> Path:
-    sid = _client_session_id()
-    d = Path(Config.UPLOAD_FOLDER) / sid
+    claims = getattr(g, "auth_user", None)
+    if claims and claims.get("sub"):
+        # Do not expose a raw Google identifier in the storage bucket path.
+        account_key = hashlib.sha256(f"google:{claims['sub']}".encode()).hexdigest()[:32]
+    else:
+        account_key = _client_session_id()
+    d = Path(Config.UPLOAD_FOLDER) / account_key
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -226,7 +282,23 @@ def _save_to_history(q: str, a: str, approach: str):
 
 @app.route("/config.js")
 def config_js():
-    return send_from_directory("frontend", "config.js", mimetype="application/javascript")
+    # Vercel serves its build-time config.js directly. Flask serves this
+    # runtime version locally so a locally configured OAuth client ID reaches
+    # the Google Identity Services script without being committed to source.
+    api_base = "http://127.0.0.1:5000"
+    script = (
+        f"window.OMNIRAG_API_BASE_URL = {json.dumps(api_base)};\n"
+        f"window.OMNIRAG_GOOGLE_CLIENT_ID = {json.dumps(Config.GOOGLE_OAUTH_CLIENT_ID)};\n"
+    )
+    return Response(script, mimetype="application/javascript")
+
+
+@app.route("/login")
+def login():
+    # Static page only — no auth flow wired up. On Vercel this file is served
+    # directly as a static asset; this route exists so it's also reachable
+    # from the local Flask dev server.
+    return render_template("login.html")
 
 
 @app.route("/")
@@ -244,6 +316,26 @@ def index():
         }
     )
 
+
+@app.route("/auth/me")
+def auth_me():
+    """Return the Google profile tied to the current private workspace."""
+    claims = g.auth_user
+    _session_dir()  # Provision account storage on the first successful login.
+    return jsonify(
+        {
+            "id": claims["sub"],
+            "email": claims.get("email", ""),
+            "name": claims.get("name") or claims.get("email", "OmniRAG user"),
+            "picture": claims.get("picture", ""),
+        }
+    )
+
+
+@app.route("/files")
+def files():
+    """List documents belonging only to the authenticated Google account."""
+    return jsonify({"files": _uploaded_files(_session_dir())})
 
 
 def _preindex_basic_rag(filenames: list[str], upload_dir: Path):

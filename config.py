@@ -16,12 +16,16 @@ def _bool_env(name: str, default: bool) -> bool:
 
 
 class Config:
-    APP_VERSION = os.getenv("APP_VERSION", "2")
+    APP_VERSION = os.getenv("APP_VERSION", "2.5")
 
     MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")          # Gemini models (primary)
     GOOGLE_API_KEY2 = os.getenv("GOOGLE_API_KEY2", "")        # Multimodal key; ReAct fallback key (second account)
     GOOGLE_API_KEY_GEMMA = os.getenv("GOOGLE_API_KEY_GEMMA", "")
+    # Public OAuth client ID used by Google Identity Services. The frontend and
+    # backend must be configured with the same Web application client ID.
+    GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "")
+    AUTH_REQUIRED = _bool_env("AUTH_REQUIRED", True)
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
 
@@ -106,4 +110,6 @@ class Config:
             missing.append("GOOGLE_API_KEY")
         if not cls.GROQ_API_KEY:
             missing.append("GROQ_API_KEY")
+        if cls.AUTH_REQUIRED and not cls.GOOGLE_OAUTH_CLIENT_ID:
+            missing.append("GOOGLE_OAUTH_CLIENT_ID")
         return missing

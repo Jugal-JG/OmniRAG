@@ -21,6 +21,7 @@ const ENGINE_ICON = {
 
 const API_BASE_URL = (window.OMNIRAG_API_BASE_URL || "").replace(/\/$/, "");
 const SESSION_STORAGE_KEY = "omnirag_session_id";
+const AUTH_STORAGE_KEY = "omnirag_google_id_token";
 
 function getSessionId() {
   let sid = localStorage.getItem(SESSION_STORAGE_KEY);
@@ -34,6 +35,8 @@ function getSessionId() {
 function apiFetch(path, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("X-Omnirag-Session-Id", getSessionId());
+  const credential = localStorage.getItem(AUTH_STORAGE_KEY);
+  if (credential) headers.set("X-Omnirag-Auth", credential);
 
   // No `credentials: "include"`: the session is tracked entirely via the
   // X-Omnirag-Session-Id header above, so cross-site cookies aren't needed.
@@ -42,6 +45,13 @@ function apiFetch(path, options = {}) {
   return fetch(`${API_BASE_URL}${path}`, {
     ...options,
     headers,
+  }).then(res => {
+    if (res.status === 401) {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+      const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      window.location.replace(`/login?next=${encodeURIComponent(next)}`);
+    }
+    return res;
   });
 }
 
@@ -98,6 +108,7 @@ const thinkingCard  = document.getElementById("thinkingCard");
 const activeModes   = document.getElementById("activeModes");
 const clearFilesBtn = document.getElementById("clearFilesBtn");
 const newChatBtn    = document.getElementById("newChatBtn");
+const signOutBtn    = document.getElementById("signOutBtn");
 const themeToggle   = document.getElementById("themeToggle");
 const THEME_STORAGE_KEY = "omnirag_theme";
 
@@ -335,6 +346,14 @@ newChatBtn.addEventListener("click", async () => {
     if (welcomeMsg) welcomeMsg.style.display = "";
     showToast("New chat started — uploaded files kept", "info");
   } catch {}
+});
+
+signOutBtn.addEventListener("click", () => {
+  // Auth uses a verified Google ID token, not a server-side cookie session.
+  // Removing it locally prevents any further authenticated API requests.
+  localStorage.removeItem(AUTH_STORAGE_KEY);
+  localStorage.removeItem(SESSION_STORAGE_KEY);
+  window.location.replace("/login");
 });
 
 /* ── Toggle state ─────────────────────────────────────────────────────────── */
@@ -817,6 +836,18 @@ function decorateNumericValues(container) {
 }
 
 /* ── Init ─────────────────────────────────────────────────────────────────── */
-loadApiStatus();
-updateToggles();
-renderFileList();
+async function initializeApp() {
+  const next = window.location.pathname + window.location.search + window.location.hash;
+  try {
+    const res = await apiFetch("/auth/me");
+    if (!res.ok) return;
+  } catch {
+    window.location.replace(`/login?next=${encodeURIComponent(next)}`);
+    return;
+  }
+  loadApiStatus();
+  updateToggles();
+  renderFileList();
+}
+
+initializeApp();

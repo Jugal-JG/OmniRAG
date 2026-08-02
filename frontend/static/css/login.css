@@ -1,0 +1,204 @@
+/* ── OmniRAG login page ──────────────────────────────────────────────────────
+ * Ported from the Claude Design canvas "OmniLogin" (dark = default variant,
+ * light = "3b" override variant). Follows the app's existing light-default /
+ * html[data-theme="dark"]-override convention from static/css/style.css, and
+ * reads the same "omnirag_theme" localStorage key so this page matches
+ * whatever theme the user last chose elsewhere in the app.
+ */
+
+html, body {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.login-page {
+  --login-accent: #9a7b3f;
+  --login-text: #141d2e;
+  --login-muted: #586074;
+  --login-tile: #ffffff;
+  --login-tileborder: rgba(20, 29, 46, .07);
+  --login-tileink: rgba(20, 29, 46, .09);
+  --login-ovc: rgba(233, 236, 242, .8);
+  --login-ov: rgba(226, 230, 238, .9);
+  --login-panel: rgba(255, 255, 255, .72);
+  --login-panelborder: rgba(20, 29, 46, .08);
+  --login-gbtn: #ffffff;
+  --login-gtext: #1c2438;
+  --login-gborder: #dfe5ee;
+  --login-shadow: 0 30px 80px -34px rgba(20, 36, 63, .26);
+
+  position: relative;
+  min-height: 100vh;
+  width: 100%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", sans-serif;
+  background: var(--login-ov);
+}
+
+html[data-theme="dark"] .login-page {
+  /* Match the application's Midnight Amethyst dark-mode palette. */
+  --login-accent: #dec395;
+  --login-text: #e8dff0;
+  --login-muted: #cbc4cc;
+  --login-tile: #221e29;
+  --login-tileborder: #49454b;
+  --login-tileink: rgba(232, 223, 240, .12);
+  --login-ovc: rgba(22, 17, 29, .82);
+  --login-ov: rgba(16, 12, 23, .96);
+  --login-panel: rgba(34, 30, 41, .86);
+  --login-panelborder: #49454b;
+  --login-gbtn: #ffffff;
+  --login-gtext: #1c2438;
+  --login-gborder: #dec395;
+  --login-shadow: 0 30px 80px -30px rgba(0, 0, 0, .72);
+}
+
+/* Faded document mosaic backdrop */
+.login-mosaic {
+  position: absolute;
+  top: -24vh;
+  left: -16%;
+  width: 132%;
+  height: 154vh;
+  transform: rotate(-11deg);
+  column-count: 8;
+  column-gap: 15px;
+  opacity: .9;
+}
+
+@media (max-width: 900px) {
+  .login-mosaic { column-count: 4; }
+}
+@media (max-width: 560px) {
+  .login-mosaic { column-count: 2; }
+}
+
+.login-tile {
+  break-inside: avoid;
+  margin-bottom: 15px;
+  background: var(--login-tile);
+  border: 1px solid var(--login-tileborder);
+  border-radius: 11px;
+  overflow: hidden;
+  position: relative;
+}
+
+.login-tile-bar { height: 6px; opacity: .85; }
+
+.login-tile-body { padding: 11px 12px; position: relative; height: 100%; }
+
+.login-tile-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.login-tile-line {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--login-tileink);
+  margin-top: 13px;
+}
+.login-tile-line + .login-tile-line { margin-top: 8px; }
+
+.login-tile-ghost {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  font-size: 34px;
+  opacity: .14;
+}
+
+/* Fade overlay */
+.login-overlay {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(78% 62% at 50% 40%, var(--login-ovc) 0%, var(--login-ov) 62%, var(--login-ov) 100%);
+}
+
+html[data-theme="dark"] .login-overlay {
+  background:
+    radial-gradient(ellipse at 50% 42%, rgba(34, 30, 41, .62) 0%, rgba(22, 17, 29, .83) 47%, rgba(16, 12, 23, .97) 100%),
+    radial-gradient(circle at 78% 14%, rgba(222, 195, 149, .11) 0 1px, transparent 2px),
+    radial-gradient(circle at 18% 78%, rgba(209, 191, 232, .08) 0 1px, transparent 2px);
+  background-size: auto, 112px 112px, 138px 138px;
+}
+
+/* Center content */
+.login-content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  width: 100%;
+  max-width: 560px;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+.login-brand-icon { color: var(--login-accent); flex-shrink: 0; }
+
+.login-brand-word {
+  font-size: clamp(40px, 7vw, 78px);
+  font-weight: 700;
+  letter-spacing: -.03em;
+  color: var(--login-text);
+  line-height: 1;
+}
+.login-brand-word span { color: var(--login-accent); }
+
+.login-tagline {
+  font-size: 20px;
+  color: var(--login-muted);
+  margin: 22px 0 0;
+  font-weight: 400;
+  text-align: center;
+}
+
+.login-panel {
+  margin-top: 42px;
+  width: 100%;
+  max-width: 452px;
+  background: var(--login-panel);
+  border: 1px solid var(--login-panelborder);
+  border-radius: 20px;
+  padding: 26px 26px 22px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.login-google-signin {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.login-error { margin: 14px 0 0; color: #b42318; font-size: 13px; line-height: 1.4; text-align: center; }
+html[data-theme="dark"] .login-error { color: #ff9b91; }
+
+.login-panel-note {
+  font-size: 12.5px;
+  color: var(--login-muted);
+  margin: 16px 0 0;
+  text-align: center;
+  line-height: 1.5;
+}

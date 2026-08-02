@@ -103,6 +103,7 @@ MISTRAL_API_KEY=...
 GOOGLE_API_KEY=...
 GROQ_API_KEY=...
 FLASK_SECRET_KEY=...
+GOOGLE_OAUTH_CLIENT_ID=...apps.googleusercontent.com
 ```
 
 Useful optional settings:
@@ -131,6 +132,8 @@ SESSION_COOKIE_SECURE=true
 
 `GOOGLE_API_KEY2` is required for multimodal image analysis and is also used as the ReAct engine’s secondary-key fallback. `COHERE_API_KEY` and the legacy Gemma variables are optional.
 
+Google authentication is enabled by default. Set `AUTH_REQUIRED=false` only for a local, single-user development session; never disable it on the deployed Space.
+
 ## API
 
 | Route | Method | Purpose |
@@ -152,7 +155,7 @@ SESSION_COOKIE_SECURE=true
 
 Use a Docker Space. The included [Dockerfile](Dockerfile) runs Gunicorn on port `7860`.
 
-Set secrets for the API keys and `FLASK_SECRET_KEY`. Set variables similar to:
+Set secrets for the API keys, `FLASK_SECRET_KEY`, and `GOOGLE_OAUTH_CLIENT_ID`. Set variables similar to:
 
 ```env
 PORT=7860
@@ -161,6 +164,7 @@ CACHE_FOLDER=/data/cache
 CORS_ORIGINS=https://your-vercel-app.vercel.app
 SESSION_COOKIE_SAMESITE=None
 SESSION_COOKIE_SECURE=true
+AUTH_REQUIRED=true
 ```
 
 Free Spaces can sleep and their default filesystem is ephemeral. Use persistent storage if vector caches and uploads must survive a restart.
@@ -174,6 +178,7 @@ a private Hugging Face Space. Set these Vercel environment variables:
 ```env
 HF_SPACE_URL=https://your-space.hf.space
 HF_SPACE_READ_TOKEN=hf_...
+GOOGLE_OAUTH_CLIENT_ID=...apps.googleusercontent.com
 ```
 
 `HF_SPACE_READ_TOKEN` must be a fine-grained Hugging Face read token scoped to

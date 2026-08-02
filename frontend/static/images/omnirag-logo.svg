@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 224" role="img" aria-labelledby="title">
+  <title id="title">OmniRAG</title>
+  <style>
+    .word { fill: #101d33; }
+    .accent, .mark { stroke: #ad8947; }
+    .accent { fill: #ad8947; }
+    @media (prefers-color-scheme: dark) {
+      .word { fill: #f5f7fb; }
+      .accent { fill: #d9b76c; }
+      .mark { stroke: #d9b76c; }
+    }
+  </style>
+  <g class="mark" fill="none" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="81" y="89" width="44" height="53" rx="7" opacity=".55" />
+    <rect x="88" y="96" width="44" height="53" rx="7" />
+    <path d="M99 113h22M99 126h22M99 139h15" />
+  </g>
+  <text x="170" y="135" class="word" font-family="Inter, Arial, sans-serif" font-size="43" font-weight="700" letter-spacing="-1.5">Omni</text>
+  <text x="281" y="135" class="accent" font-family="Inter, Arial, sans-serif" font-size="43" font-weight="600" letter-spacing="-1.5">RAG</text>
+</svg>

@@ -593,11 +593,17 @@ body { color: #092e63; background: #f6f8fc; }
 .app-navbar { background: rgba(255,255,255,.96); border-color: #e2e9f2; box-shadow: 0 1px 12px rgba(22, 58, 108, .03); }
 .brand-mark { color: #092e63; font-size: 1.6rem; font-weight: 750; letter-spacing: -.06em; }
 .brand-mark span { color: #b28b49; font-weight: 500; }
+.brand-logo { display: inline-flex; align-items: center; gap: .45rem; color: #ad8947; line-height: 1; }
+.brand-logo-icon { width: 2.25rem; height: 2.25rem; display: block; flex: 0 0 auto; }
+.brand-logo-word { color: #092e63; font-size: 1.6rem; font-weight: 750; letter-spacing: -.06em; }
+.brand-logo-word span { color: #ad8947; font-weight: 600; }
 .brand-badge { border-radius: 20px; font-size: .76rem; font-weight: 600; padding: .32rem .72rem; border: 1px solid #e1e7ef; }
 .engines-badge { background: #f6f3ed; color: #ae8240; }
 .version-badge { color: #ae8240; background: #f6f3ed; }
 .new-chat-btn { color: #9f7332; border: 1px solid #bd975b; background: #fff; border-radius: 22px; padding: .5rem 1.05rem; }
 .new-chat-btn:hover { color: #765018; border-color: #a77b3d; background: #fcf9f3; }
+.sign-out-btn { color: #7c5360; border: 1px solid #d8bec6; background: #fff; border-radius: 22px; padding: .5rem .9rem; }
+.sign-out-btn:hover { color: #5f3441; border-color: #bd929e; background: #fff7f8; }
 
 .app-sidebar { border-color: #e0e7f0; padding: 1.3rem 1.2rem; }
 .sidebar-title { color: #526b94; font-size: .76rem; letter-spacing: .12em; margin-bottom: .9rem; }
@@ -750,9 +756,14 @@ html[data-theme="dark"] .app-sidebar { background: #1a1520; border-color: #30283
 html[data-theme="dark"] .app-main { background-color: #110f17; background-image: radial-gradient(circle at 78% 14%, rgba(192, 154, 79, .18) 0 1px, transparent 2px), radial-gradient(circle at 18% 78%, rgba(199, 154, 78, .13) 0 1px, transparent 2px), linear-gradient(120deg, transparent 49.5%, rgba(202, 173, 122, .055) 50%, transparent 50.5%), linear-gradient(60deg, transparent 49.5%, rgba(202, 173, 122, .045) 50%, transparent 50.5%), radial-gradient(ellipse at 55% 45%, #211b2a 0%, #15111c 44%, #0d0c12 100%); background-size: 112px 112px, 138px 138px, 84px 84px, 84px 84px, auto; }
 html[data-theme="dark"] .brand-mark { color: #f0ecef; }
 html[data-theme="dark"] .brand-mark span { color: #e2c483; }
+html[data-theme="dark"] .brand-logo { color: #d9b76c; }
+html[data-theme="dark"] .brand-logo-word { color: #f0ecef; }
+html[data-theme="dark"] .brand-logo-word span { color: #d9b76c; }
 html[data-theme="dark"] .engines-badge { color: #e2c483; background: #3b2d1e; border-color: #5a4529; }
 html[data-theme="dark"] .new-chat-btn { color: #ead29b; background: #1d1822; border-color: #a98c58; }
 html[data-theme="dark"] .new-chat-btn:hover { color: #fff1cb; background: #2b2230; }
+html[data-theme="dark"] .sign-out-btn { color: #efc1ca; background: #1d1822; border-color: #79515d; }
+html[data-theme="dark"] .sign-out-btn:hover { color: #ffe0e5; background: #2b2230; }
 html[data-theme="dark"] .theme-toggle { color: #e4c681; border-color: #43394f; background: #27212f; }
 html[data-theme="dark"] .theme-icon-light { opacity: 0; transform: translateY(-16px) rotate(30deg); }
 html[data-theme="dark"] .theme-icon-dark { opacity: 1; transform: translateY(0) rotate(0); }
@@ -812,6 +823,8 @@ html[data-theme="dark"] .brand-mark span { color: #dec395; }
 html[data-theme="dark"] .engines-badge, html[data-theme="dark"] .version-badge { color: #cfb588; background: #594623; border-color: #dec395; }
 html[data-theme="dark"] .new-chat-btn { color: #dec395; background: #16111d; border-color: #dec395; }
 html[data-theme="dark"] .new-chat-btn:hover { color: #fbdfaf; background: #221e29; }
+html[data-theme="dark"] .sign-out-btn { color: #efc1ca; background: #16111d; border-color: #9d6472; }
+html[data-theme="dark"] .sign-out-btn:hover { color: #ffe0e5; background: #221e29; }
 html[data-theme="dark"] .theme-toggle { color: #dec395; background: #221e29; border-color: #49454b; }
 html[data-theme="dark"] .provider-status { background: linear-gradient(135deg, #221e29, #2d2834 55%, #594623); }
 html[data-theme="dark"] .provider-state { color: #cbc4cc; }
@@ -927,4 +940,4 @@ html[data-theme="dark"] .query-textarea { color: #ffffff !important; caret-color
 html[data-theme="dark"] .query-textarea::placeholder { color: #d8d1df; opacity: 1; }
 html[data-theme="dark"] .query-textarea:focus { border-color: #f1d49b !important; box-shadow: 0 0 0 3px rgba(241, 212, 155, .22) !important; }
 @media (min-width: 769px) { .chat-container:has(.welcome-splash:not([style*="display: none"])) { padding-bottom: 0; } }
-@media (max-width: 768px) { :root { --navbar-h: 68px; } .brand-mark { font-size: 1.3rem; } .app-navbar { padding: .5rem 1rem !important; } .app-navbar .brand-badge, #api-status { display: none !important; } .welcome-splash h1 { font-size: 2rem; } }
+@media (max-width: 768px) { :root { --navbar-h: 68px; } .brand-mark, .brand-logo-word { font-size: 1.3rem; } .app-navbar { padding: .5rem 1rem !important; } .app-navbar .brand-badge, #api-status { display: none !important; } .welcome-splash h1 { font-size: 2rem; } }

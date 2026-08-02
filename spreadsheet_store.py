@@ -22,14 +22,28 @@ def file_hash(file_path: Path) -> str:
     return digest.hexdigest()
 
 
-def _database_path() -> Path:
-    path = Path(Config.CACHE_FOLDER) / "spreadsheets.sqlite3"
+def _account_namespace(file_path: Path) -> str:
+    try:
+        upload_root = Path(Config.UPLOAD_FOLDER).resolve()
+        relative = file_path.resolve().parent.relative_to(upload_root)
+        return relative.parts[0] if relative.parts else "shared"
+    except (OSError, ValueError):
+        return "shared"
+
+
+def _database_path(file_path: Path) -> Path:
+    path = (
+        Path(Config.CACHE_FOLDER)
+        / "accounts"
+        / _account_namespace(file_path)
+        / "spreadsheets.sqlite3"
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _connect() -> sqlite3.Connection:
-    connection = sqlite3.connect(_database_path(), timeout=30)
+def _connect(file_path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(_database_path(file_path), timeout=30)
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA busy_timeout=30000")
     connection.execute(
@@ -80,7 +94,7 @@ def _connect() -> sqlite3.Connection:
 
 def begin_ingestion(file_path: Path) -> None:
     digest = file_hash(file_path)
-    with _connect() as connection:
+    with _connect(file_path) as connection:
         connection.execute(
             """INSERT INTO spreadsheet_files (file_hash, file_name, status)
                VALUES (?, ?, 'parsing')
@@ -93,7 +107,7 @@ def begin_ingestion(file_path: Path) -> None:
 
 def finish_ingestion(file_path: Path) -> int:
     digest = file_hash(file_path)
-    with _connect() as connection:
+    with _connect(file_path) as connection:
         count = int(connection.execute(
             "SELECT COUNT(*) FROM spreadsheet_rows WHERE file_hash = ?", (digest,)
         ).fetchone()[0])
@@ -106,7 +120,7 @@ def finish_ingestion(file_path: Path) -> int:
 
 def fail_ingestion(file_path: Path, error: Exception | str) -> None:
     digest = file_hash(file_path)
-    with _connect() as connection:
+    with _connect(file_path) as connection:
         connection.execute(
             """INSERT INTO spreadsheet_files (file_hash, file_name, status, error)
                VALUES (?, ?, 'failed', ?)
@@ -120,7 +134,7 @@ def is_ready(file_path: Path) -> bool:
     if not file_path.exists() or file_path.suffix.lower() not in SPREADSHEET_EXTENSIONS:
         return False
     digest = file_hash(file_path)
-    with _connect() as connection:
+    with _connect(file_path) as connection:
         row = connection.execute(
             "SELECT status FROM spreadsheet_files WHERE file_hash = ?", (digest,)
         ).fetchone()
@@ -167,7 +181,7 @@ def index_sheet(
                 " | ".join(text_parts),
             ))
 
-    with _connect() as connection:
+    with _connect(file_path) as connection:
         connection.execute(
             "DELETE FROM spreadsheet_rows WHERE file_hash = ? AND sheet_name = ?",
             (digest, sheet_name),
@@ -194,7 +208,7 @@ def cached_row_count(file_path: Path) -> int:
     if not file_path.exists():
         return 0
     digest = file_hash(file_path)
-    with _connect() as connection:
+    with _connect(file_path) as connection:
         row = connection.execute(
             "SELECT row_count FROM spreadsheet_files WHERE file_hash = ? AND status='ready'",
             (digest,),
@@ -205,7 +219,7 @@ def cached_row_count(file_path: Path) -> int:
 def semantic_records(file_path: Path) -> list[dict]:
     """Return a small semantic representation instead of embedding every numeric row."""
     digest = file_hash(file_path)
-    with _connect() as connection:
+    with _connect(file_path) as connection:
         sheets = connection.execute(
             """SELECT sheet_name, headers_json, row_count, formula_count, sample_json
                FROM spreadsheet_sheets WHERE file_hash=? ORDER BY sheet_name""",
@@ -285,7 +299,7 @@ def structured_snapshot(filenames: list[str], upload_dir: Path) -> tuple[list[di
         return [], []
     hashes = [file_hash(path) for path in paths]
     placeholders = ",".join("?" for _ in hashes)
-    with _connect() as connection:
+    with _connect(paths[0]) as connection:
         raw_schemas = connection.execute(
             f"""SELECT file_name, sheet_name, headers_json, row_count
                 FROM spreadsheet_sheets WHERE file_hash IN ({placeholders})
@@ -315,7 +329,7 @@ def relevant_rows(filenames: list[str], upload_dir: Path, query: str, limit: int
         return ""
     hashes = [file_hash(path) for path in paths]
     placeholders = ",".join("?" for _ in hashes)
-    with _connect() as connection:
+    with _connect(paths[0]) as connection:
         rows = connection.execute(
             f"SELECT file_name, sheet_name, row_number, row_text FROM spreadsheet_rows WHERE file_hash IN ({placeholders})",
             hashes,

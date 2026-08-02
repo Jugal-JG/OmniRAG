@@ -8,5 +8,9 @@ const apiBaseUrl = process.env.VERCEL
 
 fs.writeFileSync(
   "config.js",
-  `window.OMNIRAG_API_BASE_URL = ${JSON.stringify(apiBaseUrl.replace(/\/$/, ""))};\n`,
+  [
+    `window.OMNIRAG_API_BASE_URL = ${JSON.stringify(apiBaseUrl.replace(/\/$/, ""))};`,
+    `window.OMNIRAG_GOOGLE_CLIENT_ID = ${JSON.stringify(process.env.GOOGLE_OAUTH_CLIENT_ID || "")};`,
+    "",
+  ].join("\n"),
 );

@@ -40,6 +40,18 @@ def _file_hash(file_paths: list[str]) -> str:
     return h.hexdigest()[:16]
 
 
+def _account_namespace(file_paths: list[str]) -> str:
+    """Derive the verified account namespace from its upload directory."""
+    if not file_paths:
+        return "shared"
+    try:
+        upload_root = Path(Config.UPLOAD_FOLDER).resolve()
+        relative = Path(file_paths[0]).resolve().parent.relative_to(upload_root)
+        return relative.parts[0] if relative.parts else "shared"
+    except (OSError, ValueError):
+        return "shared"
+
+
 def cache_key(file_paths: list[str], engine_name: str) -> str:
     # Include chunk_size and embed model in the key so changing either
     # auto-invalidates old indexes (avoids stale vector mismatches).
@@ -52,7 +64,8 @@ def cache_key(file_paths: list[str], engine_name: str) -> str:
         if any(Path(path).suffix.lower() in {".csv", ".xlsx"} for path in file_paths)
         else "document1"
     )
-    return f"{engine_name}_{chunk_tag}_{model_tag}_{document_tag}_{_file_hash(file_paths)}"
+    cache_name = f"{engine_name}_{chunk_tag}_{model_tag}_{document_tag}_{_file_hash(file_paths)}"
+    return str(Path("accounts") / _account_namespace(file_paths) / cache_name)
 
 
 def cache_dir(key: str) -> Path:

@@ -8,7 +8,9 @@
 const ALLOWED_PATHS = new Set([
   "",
   "healthz",
+  "auth/me",
   "api-status",
+  "files",
   "upload",
   "upload-chunk",
   "remove-file",
@@ -58,7 +60,7 @@ module.exports = async function handler(req, res) {
   const headers = {
     Authorization: `Bearer ${token}`,
   };
-  for (const name of ["content-type", "x-omnirag-session-id"]) {
+  for (const name of ["content-type", "x-omnirag-auth", "x-omnirag-session-id"]) {
     const value = req.headers[name];
     if (value) headers[name] = value;
   }
