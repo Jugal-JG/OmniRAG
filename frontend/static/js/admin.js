@@ -42,18 +42,20 @@ async function json(response) {
   return data;
 }
 
-function renderSummary(totals) {
+function renderSummary(totals = {}, users = []) {
+  const safeUsers = Array.isArray(users) ? users : [];
   document.getElementById("summaryCards").innerHTML = [
-    ["Registered users", totals.users],
-    ["Uploaded files", window.adminUsers.reduce((sum, user) => sum + user.files.length, 0)],
-    ["Upload storage", formatBytes(totals.upload_bytes)],
-    ["Index/cache storage", formatBytes(totals.cache_bytes)],
+    ["Registered users", totals.users || 0],
+    ["Uploaded files", safeUsers.reduce((sum, user) => sum + (Array.isArray(user.files) ? user.files.length : 0), 0)],
+    ["Upload storage", formatBytes(totals.upload_bytes || 0)],
+    ["Index/cache storage", formatBytes(totals.cache_bytes || 0)],
   ].map(([label, value]) => `<article class="summary-card"><span>${label}</span><strong>${value}</strong></article>`).join("");
 }
 
 function userCard(user) {
-  const files = user.files.length
-    ? user.files.map(file => `<div class="file-row"><i class="bi bi-file-earmark"></i><span class="file-name">${escapeHtml(file.name)}</span><span class="file-size">${formatBytes(file.bytes)}</span><button class="file-delete" data-action="file" data-key="${user.account_key}" data-email="${escapeHtml(user.email)}" data-file="${encodeURIComponent(file.name)}">Delete</button></div>`).join("")
+  const userFiles = Array.isArray(user.files) ? user.files : [];
+  const files = userFiles.length
+    ? userFiles.map(file => `<div class="file-row"><i class="bi bi-file-earmark"></i><span class="file-name">${escapeHtml(file.name)}</span><span class="file-size">${formatBytes(file.bytes)}</span><button class="file-delete" data-action="file" data-key="${user.account_key}" data-email="${escapeHtml(user.email)}" data-file="${encodeURIComponent(file.name)}">Delete</button></div>`).join("")
     : '<p class="file-empty">No uploaded files.</p>';
   return `<article class="user-card">
     <div class="user-top"><div class="user-identity"><h3 class="user-name">${escapeHtml(user.name)}</h3><div class="user-email">${escapeHtml(user.email)}</div><div class="user-meta">First seen: ${formatDate(user.first_seen)} · Last seen: ${formatDate(user.last_seen)}</div></div>
@@ -71,8 +73,9 @@ function renderUsers(users) {
 async function loadUsers() {
   const response = await apiFetch("/admin/users");
   const data = await json(response);
-  renderSummary(data.totals);
-  renderUsers(data.users);
+  const users = Array.isArray(data.users) ? data.users : [];
+  renderSummary(data.totals, users);
+  renderUsers(users);
 }
 
 async function deleteData(action, key, email, encodedFile) {
