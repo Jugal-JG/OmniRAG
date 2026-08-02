@@ -2,5 +2,11 @@
   "buildCommand": "npm run build",
   "outputDirectory": ".",
   "framework": null,
-  "cleanUrls": true
+  "cleanUrls": true,
+  "rewrites": [
+    {
+      "source": "/api/backend/:path*",
+      "destination": "/api/backend?path=:path*"
+    }
+  ]
 }

@@ -1,8 +1,9 @@
 /**
  * Same-origin gateway for a private Hugging Face Space.
  *
- * The browser calls /api/backend/<backend-route>. This function adds the HF
- * bearer token server-side, so the token is never present in frontend assets.
+ * Requests are rewritten from /api/backend/<backend-route> to this single
+ * function. Keeping one concrete function path avoids platform-specific
+ * catch-all routing differences for nested paths such as /auth/me.
  */
 
 const ALLOWED_PATHS = new Set([
@@ -23,15 +24,7 @@ function readPath(req) {
   const value = req.query?.path;
   const parts = Array.isArray(value) ? value : value ? [value] : [];
   if (parts.length) return parts.join("/").replace(/^\/+|\/+$/g, "");
-
-  // Vercel's plain Node function runtime does not always populate req.query
-  // for a catch-all route. Fall back to the original URL so `/api/backend/upload`
-  // is always forwarded as `/upload`, never as the HF Space root `/`.
-  const pathname = new URL(req.url || "/", "http://localhost").pathname;
-  const prefix = "/api/backend";
-  return pathname.startsWith(prefix)
-    ? pathname.slice(prefix.length).replace(/^\/+|\/+$/g, "")
-    : "";
+  return "";
 }
 
 function copyResponseHeaders(upstream, res) {
@@ -43,8 +36,6 @@ function copyResponseHeaders(upstream, res) {
 
 module.exports = async function handler(req, res) {
   const spaceUrl = (process.env.HF_SPACE_URL || "").replace(/\/$/, "");
-  // HF_TOKEN is accepted temporarily for existing deployments. Prefer the
-  // explicit HF_SPACE_READ_TOKEN name in new Vercel environment settings.
   const token = process.env.HF_SPACE_READ_TOKEN || process.env.HF_TOKEN;
   const path = readPath(req);
 
@@ -57,9 +48,7 @@ module.exports = async function handler(req, res) {
     return res.status(404).json({ error: "Unknown backend route." });
   }
 
-  const headers = {
-    Authorization: `Bearer ${token}`,
-  };
+  const headers = { Authorization: `Bearer ${token}` };
   for (const name of ["content-type", "x-omnirag-auth", "x-omnirag-session-id"]) {
     const value = req.headers[name];
     if (value) headers[name] = value;
@@ -69,7 +58,6 @@ module.exports = async function handler(req, res) {
     const method = req.method || "GET";
     const requestOptions = { method, headers };
     if (!["GET", "HEAD"].includes(method)) {
-      // Forward multipart uploads and JSON without parsing/re-encoding them.
       requestOptions.body = req;
       requestOptions.duplex = "half";
     }
@@ -84,7 +72,6 @@ module.exports = async function handler(req, res) {
   }
 };
 
-// Preserve upload streams instead of letting Vercel parse multipart bodies.
 module.exports.config = {
   api: { bodyParser: false },
   maxDuration: 60,
