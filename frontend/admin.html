@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OmniRAG Admin</title>
+  <link rel="icon" href="/static/images/omnirag-favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
+  <link rel="stylesheet" href="/static/css/admin.css" />
+</head>
+<body>
+  <main class="admin-page">
+    <header class="admin-header">
+      <a class="admin-brand" href="/" aria-label="Return to OmniRAG">
+        <img src="/static/images/omnirag-logo.svg" alt="" />
+        <span>Omni<span>RAG</span></span>
+      </a>
+      <div class="admin-actions">
+        <span class="admin-badge"><i class="bi bi-shield-lock"></i> Owner console</span>
+        <button id="adminSignOut" class="admin-signout" type="button"><i class="bi bi-box-arrow-right"></i> Sign out</button>
+      </div>
+    </header>
+
+    <section class="admin-intro">
+      <p class="eyebrow">PRIVATE ADMINISTRATION</p>
+      <h1>Workspace administration</h1>
+      <p>Review signed-in users and manage their OmniRAG data. Deletions are permanent.</p>
+    </section>
+
+    <section id="adminError" class="admin-error" hidden></section>
+    <section id="adminContent" hidden>
+      <div id="summaryCards" class="summary-cards"></div>
+      <div class="users-heading">
+        <div>
+          <h2>Users</h2>
+          <p id="userCount"></p>
+        </div>
+        <button id="refreshUsers" class="refresh-button" type="button"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+      </div>
+      <div id="userList" class="user-list"></div>
+    </section>
+  </main>
+  <script src="/config.js"></script>
+  <script src="/static/js/admin.js"></script>
+</body>
+</html>

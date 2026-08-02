@@ -15,9 +15,10 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from functools import wraps
 from pathlib import Path
 
-from flask import Flask, Response, g, jsonify, render_template, request, send_from_directory, session
+from flask import Flask, Response, abort, g, jsonify, render_template, request, send_from_directory, session
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -98,7 +99,7 @@ def authenticate_request():
     """Require Google authentication for every account-data API route."""
     if request.method == "OPTIONS":
         return None
-    if request.endpoint in {"static", "index", "login", "config_js", "healthz"}:
+    if request.endpoint in {"static", "index", "login", "admin", "config_js", "healthz"}:
         return None
     if not Config.AUTH_REQUIRED:
         g.auth_user = {
@@ -149,11 +150,16 @@ def _client_session_id() -> str:
     return sid
 
 
+def _account_key(claims: dict) -> str:
+    """Return the non-reversible filesystem namespace for a verified user."""
+    return hashlib.sha256(f"google:{claims['sub']}".encode()).hexdigest()[:32]
+
+
 def _session_dir() -> Path:
     claims = getattr(g, "auth_user", None)
     if claims and claims.get("sub"):
         # Do not expose a raw Google identifier in the storage bucket path.
-        account_key = hashlib.sha256(f"google:{claims['sub']}".encode()).hexdigest()[:32]
+        account_key = _account_key(claims)
     else:
         account_key = _client_session_id()
     d = Path(Config.UPLOAD_FOLDER) / account_key
@@ -293,12 +299,96 @@ def config_js():
     return Response(script, mimetype="application/javascript")
 
 
+def _is_admin(claims: dict | None = None) -> bool:
+    claims = claims or getattr(g, "auth_user", {})
+    email = str(claims.get("email") or "").strip().lower()
+    return bool(email and email in Config.ADMIN_EMAILS)
+
+
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not _is_admin():
+            return jsonify({"error": "Administrator access is required."}), 403
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def _safe_account_directory(root: Path, account_key: str) -> Path:
+    """Resolve a known account directory without allowing path traversal."""
+    if not re.fullmatch(r"[a-f0-9]{32}", account_key):
+        abort(404)
+    root = root.resolve()
+    target = (root / account_key).resolve()
+    if target.parent != root:
+        abort(404)
+    return target
+
+
+def _directory_size(directory: Path) -> int:
+    if not directory.is_dir():
+        return 0
+    total = 0
+    for path in directory.rglob("*"):
+        try:
+            if path.is_file() and not path.is_symlink():
+                total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _admin_user_summary(profile: dict) -> dict:
+    account_key = profile["account_key"]
+    upload_dir = _safe_account_directory(Path(Config.UPLOAD_FOLDER), account_key)
+    cache_root = Path(Config.CACHE_FOLDER) / "accounts"
+    cache_dir = _safe_account_directory(cache_root, account_key)
+    files = []
+    if upload_dir.is_dir():
+        for path in sorted(upload_dir.iterdir(), key=lambda item: item.name.lower()):
+            try:
+                if path.is_file() and allowed_file(path.name):
+                    files.append({"name": path.name, "bytes": path.stat().st_size})
+            except OSError:
+                continue
+    upload_bytes = sum(file["bytes"] for file in files)
+    cache_bytes = _directory_size(cache_dir)
+    return {
+        **profile,
+        "files": files,
+        "upload_bytes": upload_bytes,
+        "cache_bytes": cache_bytes,
+        "total_bytes": upload_bytes + cache_bytes,
+    }
+
+
+def _delete_account_cache(account_key: str) -> None:
+    cache_dir = _safe_account_directory(Path(Config.CACHE_FOLDER) / "accounts", account_key)
+    if cache_dir.is_dir():
+        shutil.rmtree(cache_dir)
+
+
+def _delete_account_workspace(account_key: str) -> None:
+    upload_dir = _safe_account_directory(Path(Config.UPLOAD_FOLDER), account_key)
+    if upload_dir.is_dir():
+        shutil.rmtree(upload_dir)
+    _delete_account_cache(account_key)
+
+
 @app.route("/login")
 def login():
     # Static page only — no auth flow wired up. On Vercel this file is served
     # directly as a static asset; this route exists so it's also reachable
     # from the local Flask dev server.
     return render_template("login.html")
+
+
+@app.route("/admin")
+def admin():
+    # The static Vercel deployment serves admin.html directly. This route keeps
+    # the owner console available from the local Flask development server too.
+    return render_template("admin.html")
 
 
 @app.route("/")
@@ -321,13 +411,18 @@ def index():
 def auth_me():
     """Return the Google profile tied to the current private workspace."""
     claims = g.auth_user
-    _session_dir()  # Provision account storage on the first successful login.
+    upload_dir = _session_dir()  # Provision account storage on first login.
+    if Config.AUTH_REQUIRED:
+        from admin_store import record_user
+
+        record_user(_account_key(claims), claims)
     return jsonify(
         {
             "id": claims["sub"],
             "email": claims.get("email", ""),
             "name": claims.get("name") or claims.get("email", "OmniRAG user"),
             "picture": claims.get("picture", ""),
+            "is_admin": _is_admin(claims),
         }
     )
 
@@ -336,6 +431,58 @@ def auth_me():
 def files():
     """List documents belonging only to the authenticated Google account."""
     return jsonify({"files": _uploaded_files(_session_dir())})
+
+
+@app.route("/admin/users")
+@admin_required
+def admin_users():
+    from admin_store import users
+
+    records = [_admin_user_summary(profile) for profile in users()]
+    return jsonify(
+        {
+            "users": records,
+            "totals": {
+                "users": len(records),
+                "upload_bytes": sum(record["upload_bytes"] for record in records),
+                "cache_bytes": sum(record["cache_bytes"] for record in records),
+                "total_bytes": sum(record["total_bytes"] for record in records),
+            },
+        }
+    )
+
+
+@app.route("/admin/users/<account_key>/files/<path:filename>", methods=["DELETE"])
+@admin_required
+def admin_delete_file(account_key: str, filename: str):
+    upload_dir = _safe_account_directory(Path(Config.UPLOAD_FOLDER), account_key)
+    safe_name = secure_filename(filename)
+    if safe_name != filename or not allowed_file(safe_name):
+        abort(404)
+    file_path = upload_dir / safe_name
+    if not file_path.is_file():
+        abort(404)
+    file_path.unlink()
+    # Indexes and structured records derived from the deleted file must not be retained.
+    _delete_account_cache(account_key)
+    return jsonify({"success": True})
+
+
+@app.route("/admin/users/<account_key>/workspace", methods=["DELETE"])
+@admin_required
+def admin_delete_workspace(account_key: str):
+    _delete_account_workspace(account_key)
+    return jsonify({"success": True})
+
+
+@app.route("/admin/users/<account_key>", methods=["DELETE"])
+@admin_required
+def admin_forget_user(account_key: str):
+    _delete_account_workspace(account_key)
+    from admin_store import forget_user
+
+    forget_user(account_key)
+    return jsonify({"success": True})
 
 
 def _preindex_basic_rag(filenames: list[str], upload_dir: Path):

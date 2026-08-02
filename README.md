@@ -160,7 +160,7 @@ When `AUTH_REQUIRED=true` (the production default), all account-data API routes 
 
 Use a Docker Space. The included [Dockerfile](Dockerfile) runs Gunicorn on port `7860`.
 
-Set secrets for the API keys, `FLASK_SECRET_KEY`, and `GOOGLE_OAUTH_CLIENT_ID`. Set variables similar to:
+Set secrets for the API keys, `FLASK_SECRET_KEY`, `GOOGLE_OAUTH_CLIENT_ID`, and `ADMIN_EMAILS`. Set variables similar to:
 
 ```env
 PORT=7860
@@ -170,6 +170,7 @@ CORS_ORIGINS=https://your-vercel-app.vercel.app
 SESSION_COOKIE_SAMESITE=None
 SESSION_COOKIE_SECURE=true
 AUTH_REQUIRED=true
+ADMIN_EMAILS=jugalganeshboddu@gmail.com
 ```
 
 Free Spaces can sleep and their default filesystem is ephemeral. Use persistent storage if vector caches and uploads must survive a restart.
@@ -177,7 +178,7 @@ Free Spaces can sleep and their default filesystem is ephemeral. Use persistent 
 ### Vercel frontend
 
 Deploy [`frontend/`](frontend) as the Vercel root directory. The included
-`frontend/api/backend/[...path].js` Vercel Function is a same-origin proxy for
+`frontend/api/backend.js` Vercel Function is a same-origin proxy for
 a private Hugging Face Space. Set these Vercel environment variables:
 
 ```env
@@ -190,6 +191,12 @@ GOOGLE_OAUTH_CLIENT_ID=...apps.googleusercontent.com
 the Space. It is used only by the Vercel Function and is never sent to the
 browser. The frontend build routes production requests to `/api/backend`; do
 not set `OMNIRAG_API_BASE_URL` to the private `.hf.space` URL.
+
+### Owner dashboard
+
+Set `ADMIN_EMAILS` to the comma-separated Google account emails allowed to use `/admin`. The dashboard lists
+recorded users and their upload/cache usage, and can permanently delete an individual file, a user's workspace, or
+their OmniRAG user record. It does not delete the person's Google account.
 
 #### Large uploads (over ~4.5 MB)
 

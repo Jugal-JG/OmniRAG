@@ -602,6 +602,8 @@ body { color: #092e63; background: #f6f8fc; }
 .version-badge { color: #ae8240; background: #f6f3ed; }
 .new-chat-btn { color: #9f7332; border: 1px solid #bd975b; background: #fff; border-radius: 22px; padding: .5rem 1.05rem; }
 .new-chat-btn:hover { color: #765018; border-color: #a77b3d; background: #fcf9f3; }
+.admin-btn { color: #385d89; border: 1px solid #aac4df; background: #f8fbff; border-radius: 22px; padding: .5rem .9rem; }
+.admin-btn:hover { color: #224a78; border-color: #7fa7d1; background: #edf5ff; }
 .sign-out-btn { color: #7c5360; border: 1px solid #d8bec6; background: #fff; border-radius: 22px; padding: .5rem .9rem; }
 .sign-out-btn:hover { color: #5f3441; border-color: #bd929e; background: #fff7f8; }
 
@@ -762,6 +764,8 @@ html[data-theme="dark"] .brand-logo-word span { color: #d9b76c; }
 html[data-theme="dark"] .engines-badge { color: #e2c483; background: #3b2d1e; border-color: #5a4529; }
 html[data-theme="dark"] .new-chat-btn { color: #ead29b; background: #1d1822; border-color: #a98c58; }
 html[data-theme="dark"] .new-chat-btn:hover { color: #fff1cb; background: #2b2230; }
+html[data-theme="dark"] .admin-btn { color: #b8d5f2; background: #1d1822; border-color: #55789b; }
+html[data-theme="dark"] .admin-btn:hover { color: #d9ecff; background: #2b2230; }
 html[data-theme="dark"] .sign-out-btn { color: #efc1ca; background: #1d1822; border-color: #79515d; }
 html[data-theme="dark"] .sign-out-btn:hover { color: #ffe0e5; background: #2b2230; }
 html[data-theme="dark"] .theme-toggle { color: #e4c681; border-color: #43394f; background: #27212f; }
@@ -823,6 +827,8 @@ html[data-theme="dark"] .brand-mark span { color: #dec395; }
 html[data-theme="dark"] .engines-badge, html[data-theme="dark"] .version-badge { color: #cfb588; background: #594623; border-color: #dec395; }
 html[data-theme="dark"] .new-chat-btn { color: #dec395; background: #16111d; border-color: #dec395; }
 html[data-theme="dark"] .new-chat-btn:hover { color: #fbdfaf; background: #221e29; }
+html[data-theme="dark"] .admin-btn { color: #b8d5f2; background: #16111d; border-color: #55789b; }
+html[data-theme="dark"] .admin-btn:hover { color: #d9ecff; background: #221e29; }
 html[data-theme="dark"] .sign-out-btn { color: #efc1ca; background: #16111d; border-color: #9d6472; }
 html[data-theme="dark"] .sign-out-btn:hover { color: #ffe0e5; background: #221e29; }
 html[data-theme="dark"] .theme-toggle { color: #dec395; background: #221e29; border-color: #49454b; }

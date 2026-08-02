@@ -12,6 +12,7 @@ const ALLOWED_PATHS = new Set([
   "auth/me",
   "api-status",
   "files",
+  "admin/users",
   "upload",
   "upload-chunk",
   "remove-file",
@@ -44,7 +45,8 @@ module.exports = async function handler(req, res) {
       error: "Vercel proxy is not configured. Set HF_SPACE_URL and HF_SPACE_READ_TOKEN.",
     });
   }
-  if (!ALLOWED_PATHS.has(path)) {
+  const isAdminDeletion = /^admin\/users\/[a-f0-9]{32}(?:\/workspace|\/files\/[^/]+)?$/.test(path);
+  if (!ALLOWED_PATHS.has(path) && !isAdminDeletion) {
     return res.status(404).json({ error: "Unknown backend route." });
   }
 

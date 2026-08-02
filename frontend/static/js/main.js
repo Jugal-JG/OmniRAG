@@ -108,6 +108,7 @@ const thinkingCard  = document.getElementById("thinkingCard");
 const activeModes   = document.getElementById("activeModes");
 const clearFilesBtn = document.getElementById("clearFilesBtn");
 const newChatBtn    = document.getElementById("newChatBtn");
+const adminBtn      = document.getElementById("adminBtn");
 const signOutBtn    = document.getElementById("signOutBtn");
 const themeToggle   = document.getElementById("themeToggle");
 const THEME_STORAGE_KEY = "omnirag_theme";
@@ -846,6 +847,8 @@ async function initializeApp() {
       window.location.replace(`/login?next=${encodeURIComponent(next)}`);
       return;
     }
+    const profile = await readJsonResponse(res);
+    adminBtn.hidden = !profile.is_admin;
   } catch {
     window.location.replace(`/login?next=${encodeURIComponent(next)}`);
     return;

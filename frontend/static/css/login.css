@@ -202,3 +202,13 @@ html[data-theme="dark"] .login-error { color: #ff9b91; }
   text-align: center;
   line-height: 1.5;
 }
+
+.login-data-notice {
+  width: 100%;
+  max-width: 510px;
+  margin: 18px 0 0;
+  color: var(--login-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}

@@ -26,6 +26,12 @@ class Config:
     # backend must be configured with the same Web application client ID.
     GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "")
     AUTH_REQUIRED = _bool_env("AUTH_REQUIRED", True)
+    # Comma-separated verified Google account emails permitted to use /admin.
+    ADMIN_EMAILS = frozenset(
+        email.strip().lower()
+        for email in os.getenv("ADMIN_EMAILS", "").split(",")
+        if email.strip()
+    )
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
 
