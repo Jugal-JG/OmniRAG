@@ -6,7 +6,7 @@ colorTo: indigo
 sdk: docker
 app_port: 7860
 pinned: false
-license: mit
+license: agpl-3.0
 ---
 
 # OmniRAG
@@ -20,7 +20,7 @@ Supported uploads: PDF, TXT, Markdown, HTML, CSV, XLSX, PNG, JPG, JPEG, and GIF.
 - Routes text questions to Basic RAG, Router, Sub-Question, Multi-Document, or ReAct workflows.
 - Analyses image-only uploads with a vision model.
 - Combines image and document answers when both are uploaded.
-- Uses a shared per-file BGE-M3 vector index: an unchanged file is embedded once and reused across all text engines.
+- Uses a shared per-file Mistral embedding index: an unchanged file is embedded once and reused across all text engines.
 - Keeps separate summary indexes for overview questions; summary indexes do not create a second set of embeddings.
 - Handles scanned PDFs with an OCR fallback.
 - Renders valid LaTeX output with KaTeX.
@@ -33,12 +33,12 @@ Browser
   ├─ local: Flask serves the UI at http://127.0.0.1:5000
   └─ deployment: Vercel frontend → Hugging Face Space API
                                       │
-                                      ├─ BGE-M3 shared vector indexes
+                                      ├─ Mistral shared embedding indexes
                                       ├─ persisted summary indexes
                                       └─ Groq, Gemini, and Mistral APIs
 ```
 
-The frontend sends a browser-generated `X-Omnirag-Session-Id` header. The backend uses it to keep uploads and chat history isolated by browser session.
+Google Identity Services authenticates each user. The frontend forwards the verified Google ID token as `X-Omnirag-Auth` through the same-origin Vercel proxy; the backend uses a hashed Google account identifier to isolate uploads, chat history, vector indexes, and spreadsheet data per user. `X-Omnirag-Session-Id` remains a browser-local fallback only when authentication is explicitly disabled for local development.
 
 ## Engines
 
@@ -67,7 +67,7 @@ Upload PDF
 
 If a query reaches an engine while that file’s vector index is still building, the engine waits on the shared cache lock, then loads the finished index. It does not embed the file a second time.
 
-CSV/XLSX files use a dual ingestion path. Exact rows, headers, and formulas are stored immediately in `CACHE_FOLDER/spreadsheets.sqlite3`; exact lookups and aggregations can run there without waiting for embeddings. In parallel, only sheet profiles, formula groups, and narrative cells enter the semantic index. Ordinary numeric rows are not duplicated into the vector store.
+CSV/XLSX files use a dual ingestion path. Exact rows, headers, and formulas are stored immediately in `CACHE_FOLDER/accounts/<account-namespace>/spreadsheets.sqlite3`; exact lookups and aggregations can run there without waiting for embeddings. In parallel, only sheet profiles, formula groups, and narrative cells enter the semantic index. Ordinary numeric rows are not duplicated into the vector store.
 
 Cache keys include file content, chunk size, and embedding model. Changing any of them creates a new cache automatically.
 
@@ -114,7 +114,7 @@ UPLOAD_FOLDER=uploads
 CACHE_FOLDER=cache
 
 # Embeddings and retrieval
-EMBED_MODEL=BAAI/bge-m3
+MISTRAL_EMBED_MODEL=mistral-embed
 
 # Models
 MISTRAL_LLM=mistral-large-latest
@@ -138,7 +138,10 @@ Google authentication is enabled by default. Set `AUTH_REQUIRED=false` only for 
 
 | Route | Method | Purpose |
 | --- | --- | --- |
-| `/` | GET | Application UI |
+| `/` | GET | Application UI locally; backend status response on a deployed Space |
+| `/login` | GET | Google sign-in page |
+| `/auth/me` | GET | Verify the current Google ID token and return the signed-in profile |
+| `/files` | GET | List documents belonging to the signed-in account |
 | `/healthz` | GET | Health/status response |
 | `/api-status` | GET | Configured-provider status |
 | `/upload` | POST | Upload one or more files for the current session |
@@ -148,6 +151,8 @@ Google authentication is enabled by default. Set `AUTH_REQUIRED=false` only for 
 | `/query` | POST | Send a question and receive an answer |
 
 `/query` accepts JSON with `query` and optional boolean `multi_doc` and `thinking` fields.
+
+When `AUTH_REQUIRED=true` (the production default), all account-data API routes require a verified Google ID token in the `X-Omnirag-Auth` header. The Vercel proxy forwards this header to the private Space; frontend callers should use the provided `apiFetch` helper rather than call the Space directly.
 
 ## Deploying the frontend and backend
 
@@ -210,7 +215,7 @@ shared_vector_index.py    Per-file shared vector cache and build lock
 retrieval.py              Hybrid vector + BM25 retriever and answer template
 doc_loader.py             File loading and OCR fallback
 index_cache.py            Cache keys, metadata, and locks
-model_cache.py            In-process Hugging Face embedding-model cache
+model_cache.py            Cached embedding client (Mistral API by default; Hugging Face fallback supported)
 utils.py                  Retry, file classification, and source helpers
 engines/
   basic_rag.py            Basic RAG
@@ -227,7 +232,7 @@ uploads/                  Local session uploads (ignored by Git)
 
 ## Troubleshooting
 
-**First answer is slow** — the BGE-M3 model may need to load and new files must be embedded once. Later requests reuse the in-process model and shared vector indexes.
+**First answer is slow** — new files must be parsed and embedded through Mistral's `mistral-embed` API before they can be queried. Later requests reuse the account-scoped shared vector indexes.
 
 **A PDF is slow or has missing text** — it may be scanned; OCR has to run before retrieval.
 
@@ -241,4 +246,4 @@ uploads/                  Local session uploads (ignored by Git)
 
 ## License
 
-MIT.
+GNU Affero General Public License v3.0 (AGPL-3.0). See [LICENSE](LICENSE).

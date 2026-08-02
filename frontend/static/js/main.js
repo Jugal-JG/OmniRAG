@@ -840,7 +840,12 @@ async function initializeApp() {
   const next = window.location.pathname + window.location.search + window.location.hash;
   try {
     const res = await apiFetch("/auth/me");
-    if (!res.ok) return;
+    if (!res.ok) {
+      // A 401 is already redirected by apiFetch. Any other failure must not
+      // leave the unauthenticated application UI visible behind an error.
+      window.location.replace(`/login?next=${encodeURIComponent(next)}`);
+      return;
+    }
   } catch {
     window.location.replace(`/login?next=${encodeURIComponent(next)}`);
     return;
