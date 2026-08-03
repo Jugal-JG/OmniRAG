@@ -220,6 +220,15 @@ def run(query: str, filenames: list[str], upload_dir: Path) -> dict:
         logger.info("[router_engine] answered exact spreadsheet query from SQLite")
         return structured_result
 
+    from spreadsheet_query import spreadsheet_schema_issue
+    schema_issue = spreadsheet_schema_issue(filenames, upload_dir)
+    if schema_issue:
+        return {
+            "answer": schema_issue,
+            "sources": [],
+            "thinking_steps": ["Stopped before semantic retrieval because the spreadsheet schema is not trustworthy."],
+        }
+
     # Broad workbook questions can use the compact sheet profiles immediately,
     # without waiting for the background vector job.
     from spreadsheet_store import profile_context

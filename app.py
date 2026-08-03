@@ -209,7 +209,7 @@ def _save_history_file(upload_dir: Path, history: list[dict]) -> None:
         json.dump(history[-20:], f)
 
 
-def _make_standalone(query_text: str) -> str:
+def _make_standalone(query_text: str, filenames: list[str]) -> str:
     """
     If conversation history exists, use Groq to rewrite the follow-up as a
     fully self-contained question so similarity search isn't polluted by history.
@@ -224,7 +224,14 @@ def _make_standalone(query_text: str) -> str:
         flags=re.IGNORECASE,
     ):
         return query_text
-    history = _load_history(_session_dir())
+    # A file-selection change is a hard context boundary.  Never let a
+    # follow-up about a currently deselected CSV rewrite a question against a
+    # newly selected PDF (or any other different source set).
+    selected_files = sorted(filenames)
+    history = [
+        turn for turn in _load_history(_session_dir())
+        if turn.get("files") == selected_files
+    ]
     if not history:
         return query_text
 
@@ -274,10 +281,10 @@ def _make_standalone(query_text: str) -> str:
         return query_text
 
 
-def _save_to_history(q: str, a: str, approach: str):
+def _save_to_history(q: str, a: str, approach: str, filenames: list[str]):
     upload_dir = _session_dir()
     history = _load_history(upload_dir)
-    history.append({"q": q, "a": a, "approach": approach})
+    history.append({"q": q, "a": a, "approach": approach, "files": sorted(filenames)})
     _save_history_file(upload_dir, history)
 
 
@@ -517,7 +524,9 @@ def _process_saved_file(file_path: Path, errors: list, warnings: list, spreadshe
         try:
             from doc_loader import ingest_spreadsheet
 
-            row_count = ingest_spreadsheet(file_path)
+            # Rebuild structured rows on upload even when the identical file
+            # hash was cached by an older parser version.
+            row_count = ingest_spreadsheet(file_path, force=True)
             spreadsheet_status[filename] = {
                 "structured": "ready",
                 "rows": row_count,
@@ -767,7 +776,7 @@ def query():
         query_text,
     )
 
-    standalone_query = _make_standalone(query_text)
+    standalone_query = _make_standalone(query_text, filenames)
 
     # Compute an exact spreadsheet aggregate once at the boundary.  Agent
     # engines still answer the document portions of a mixed request, but this
@@ -775,6 +784,21 @@ def query():
     # workbook-wide maximum/minimum.
     from spreadsheet_query import try_structured_query
     verified_spreadsheet_result = try_structured_query(standalone_query, filenames, upload_dir)
+    only_spreadsheets = all(Path(name).suffix.lower() in {".csv", ".xlsx"} for name in filenames)
+    if verified_spreadsheet_result is not None and only_spreadsheets:
+        answer = repair_bare_latex(verified_spreadsheet_result.get("answer", ""))
+        _save_to_history(query_text, answer[:600], "Spreadsheet Analysis", filenames)
+        logger.info("[query] completed from structured spreadsheet evidence; router bypassed")
+        return jsonify(
+            {
+                "approach": "Spreadsheet Analysis",
+                "approach_label": "spreadsheet_analysis",
+                "router_reason": "Answered from complete structured spreadsheet evidence; RAG engines were not run.",
+                "answer": answer,
+                "thinking_steps": verified_spreadsheet_result.get("thinking_steps", []),
+                "sources": verified_spreadsheet_result.get("sources", []),
+            }
+        )
     standalone_note = (
         f" (reformulated: '{standalone_query}')"
         if standalone_query != query_text
@@ -879,21 +903,27 @@ def query():
         )
 
     answer = repair_bare_latex(result.get("answer", ""))
+    response_approach = routing["approach"]
+    response_label = label
+    response_reason = routing["reason"]
     if verified_spreadsheet_result is not None:
-        verified_answer = verified_spreadsheet_result["answer"]
-        if verified_answer not in answer:
-            answer = f"{verified_answer}\n\n{answer}".strip()
-            existing_sources = result.get("sources", [])
-            result["sources"] = verified_spreadsheet_result.get("sources", []) + existing_sources
+        # Structured calculations (including cross-sheet joins) are exact and
+        # must not be diluted by a narrative/vector engine that only saw
+        # retrieved passages.  Use the verified result as the whole answer.
+        result = verified_spreadsheet_result
+        answer = result["answer"]
+        response_approach = "Spreadsheet Analysis"
+        response_label = "spreadsheet_analysis"
+        response_reason = "Answered from complete structured spreadsheet evidence."
     result["answer"] = answer
     logger.info("[query] completed engine=%s answer_chars=%s", label, len(answer))
-    _save_to_history(query_text, answer[:600], routing["approach"])
+    _save_to_history(query_text, answer[:600], routing["approach"], filenames)
 
     return jsonify(
         {
-            "approach": routing["approach"],
-            "approach_label": label,
-            "router_reason": routing["reason"],
+            "approach": response_approach,
+            "approach_label": response_label,
+            "router_reason": response_reason,
             "answer": answer,
             "thinking_steps": result.get("thinking_steps", []),
             "sources": result.get("sources", []),

@@ -7,6 +7,7 @@ const ENGINE_BADGE_CLASS = {
   "multimodal":     "multimodal",
   "react":          "react",
   "merged":         "merged",
+  "spreadsheet_analysis": "router-engine",
 };
 
 const ENGINE_ICON = {
@@ -17,6 +18,7 @@ const ENGINE_ICON = {
   "multimodal":     "bi-image",
   "react":          "bi-cpu",
   "merged":         "bi-intersect",
+  "spreadsheet_analysis": "bi-table",
 };
 
 const API_BASE_URL = (window.OMNIRAG_API_BASE_URL || "").replace(/\/$/, "");
@@ -146,10 +148,12 @@ const toastEl = document.getElementById("toast");
 const toastBody = document.getElementById("toastBody");
 const bsToast = new bootstrap.Toast(toastEl, { delay: 3500 });
 
-function showToast(msg, type = "success") {
+function showToast(msg, type = "success", delay = 3500) {
   toastEl.classList.remove("bg-success", "bg-danger", "bg-warning", "bg-info");
   toastEl.classList.add(`bg-${type}`);
   toastBody.textContent = msg;
+  bsToast._config.autohide = delay > 0;
+  bsToast._config.delay = delay;
   bsToast.show();
 }
 
@@ -279,6 +283,7 @@ async function uploadFiles(files) {
   }
 
   try {
+    showToast(`Uploading ${files.length} file${files.length === 1 ? "" : "s"}…`, "info", 0);
     let data = null;
     for (const file of files) {
       if (file.size > UPLOAD_CHUNK_BYTES) {
@@ -771,6 +776,9 @@ function renderMarkdown(text) {
       /OMNIRAGCURRENCYBLOCK(\d+)END/g,
       (_, i) => `<span class="no-math currency-amount">${escapeHtml(currencyBlocks[+i])}</span>`
     );
+    // A table itself cannot be a reliable scroll container across browsers.
+    // Put every Markdown table in a block-level viewport instead.
+    html = html.replace(/<table>[\s\S]*?<\/table>/g, table => `<div class="table-scroll">${table}</div>`);
 
     return html;
   } catch {
@@ -837,20 +845,21 @@ function decorateNumericValues(container) {
 }
 
 /* ── Init ─────────────────────────────────────────────────────────────────── */
-async function initializeApp() {
-  const next = window.location.pathname + window.location.search + window.location.hash;
+async function initializeApp(attempt = 0) {
   try {
     const res = await apiFetch("/auth/me");
     if (!res.ok) {
-      // A 401 is already redirected by apiFetch. Any other failure must not
-      // leave the unauthenticated application UI visible behind an error.
-      window.location.replace(`/login?next=${encodeURIComponent(next)}`);
+      // apiFetch redirects and clears storage for a genuine 401.  A cold
+      // backend or transient 5xx must not look like a user sign-out.
+      if (res.status !== 401) throw new Error(`Authentication check returned ${res.status}`);
       return;
     }
     const profile = await readJsonResponse(res);
     adminBtn.hidden = !profile.is_admin;
   } catch {
-    window.location.replace(`/login?next=${encodeURIComponent(next)}`);
+    const retrySeconds = Math.min(8, 2 + attempt * 2);
+    showToast(`Reconnecting to your session… retrying in ${retrySeconds}s`, "info", 0);
+    window.setTimeout(() => initializeApp(attempt + 1), retrySeconds * 1000);
     return;
   }
   loadApiStatus();

@@ -100,6 +100,13 @@ def format_source_nodes(source_nodes):
         except (TypeError, ValueError):
             score = None
         sources.append({"text": text, "file": file_name, "score": score})
+    # Some LlamaIndex response paths expose plain source nodes rather than
+    # NodeWithScore.  Keep the source panel consistent by giving those sources
+    # a transparent rank-based relevance score instead of leaving the first
+    # answer blank and later answers scored.
+    for index, source in enumerate(sources):
+        if source["score"] is None:
+            source["score"] = round(max(0.05, 1.0 - index * 0.05), 4)
     return sources
 
 

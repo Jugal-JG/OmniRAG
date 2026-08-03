@@ -14,6 +14,66 @@ import os
 from pathlib import Path
 from typing import Iterable
 
+
+def _cell_text(value) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _header_row_index(table: list[tuple]) -> int | None:
+    """Find the real header in a report-style sheet rather than assuming row one.
+
+    XLSX exports commonly start with titles, notes, or blank rows.  A usable
+    header is mostly text labels and is followed by a dense block of records.
+    """
+    best: tuple[float, int] | None = None
+    for index, row in enumerate(table[:10]):
+        cells = [_cell_text(value) for value in row]
+        labels = [cell for cell in cells if cell]
+        text_labels = [cell for cell in labels if not cell.replace(".", "", 1).replace("-", "", 1).isdigit()]
+        # Repeated labels (for example, several "Total" columns) are normal
+        # in report workbooks with stacked headers.  They are disambiguated by
+        # _clean_headers using the preceding header rows.
+        if len(labels) < 2 or len(text_labels) < 2:
+            continue
+        width = len(labels)
+        following = table[index + 1:index + 13]
+        densities = [sum(bool(_cell_text(value)) for value in candidate) for candidate in following]
+        dense_rows = sum(density >= max(2, width * 0.45) for density in densities)
+        if dense_rows < 2:
+            continue
+        score = len(text_labels) * 4 + dense_rows * 3 + min(width, 12)
+        if best is None or score > best[0]:
+            best = (score, index)
+    return best[1] if best else None
+
+
+def _clean_headers(header_rows: list[tuple]) -> list[str]:
+    seen: dict[str, int] = {}
+    headers = []
+    width = max(len(row) for row in header_rows)
+    # Excel represents merged cells only in their left-most position. Forward
+    # fill each header level so a group label applies to its whole span.
+    expanded_rows = []
+    for row in header_rows:
+        expanded = []
+        last_value = ""
+        for index in range(width):
+            value = _cell_text(row[index] if index < len(row) else None)
+            if value:
+                last_value = value
+            expanded.append(last_value)
+        expanded_rows.append(expanded)
+    for index in range(width):
+        parts = []
+        for row in expanded_rows:
+            value = row[index]
+            if value and value not in parts:
+                parts.append(value)
+        base = " | ".join(parts) or f"Column {index + 1}"
+        seen[base] = seen.get(base, 0) + 1
+        headers.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
+    return headers
+
 def _total_chars(docs: Iterable[Document]) -> int:
     return sum(len(doc.text or "") for doc in docs)
 
@@ -81,20 +141,43 @@ def _cache_table(
     sheet_name: str,
     formula_rows: Iterable[tuple] | None = None,
 ) -> None:
-    """Store one table exactly in SQLite; semantic documents are derived later."""
-    rows = iter(rows)
-    try:
-        headers = next(rows)
-    except StopIteration:
+    """Store the primary tabular region exactly in SQLite."""
+    table = list(rows)
+    header_index = _header_row_index(table)
+    if header_index is None:
         return
-
-    headers = [str(value).strip() if value is not None else f"Column {i + 1}" for i, value in enumerate(headers)]
-    formula_iter = iter(formula_rows) if formula_rows is not None else None
-    if formula_iter is not None:
-        next(formula_iter, None)  # Skip the header row to stay aligned with values.
-
-    materialized_rows = list(rows)
-    materialized_formulas = list(formula_iter) if formula_iter is not None else None
+    # Keep up to three contiguous header rows so a report matrix such as
+    # "Photovoltaic → Capacity MW → Residential" becomes one usable field.
+    header_start = header_index
+    while header_start > 0 and header_index - header_start < 2:
+        if not any(_cell_text(value) for value in table[header_start - 1]):
+            break
+        header_start -= 1
+    headers = _clean_headers(table[header_start:header_index + 1])
+    data_indices = []
+    end = len(table)
+    blank_run = 0
+    for index, row in enumerate(table[header_index + 1:], start=header_index + 1):
+        populated = [_cell_text(value) for value in row if _cell_text(value)]
+        if not populated:
+            blank_run += 1
+            if blank_run >= 3:
+                end = index - 2
+                break
+            continue
+        # Report footnotes are often a single long cell immediately after the
+        # data block. They are metadata, not records.
+        if data_indices and len(populated) == 1 and len(populated[0]) >= 80:
+            end = index
+            break
+        blank_run = 0
+        data_indices.append(index)
+    materialized_rows = [table[index] for index in data_indices]
+    formula_table = list(formula_rows) if formula_rows is not None else None
+    materialized_formulas = (
+        [formula_table[index] for index in data_indices if index < len(formula_table)]
+        if formula_table is not None else None
+    )
     from spreadsheet_store import index_sheet
 
     index_sheet(file_path, sheet_name, headers, materialized_rows, materialized_formulas)

@@ -911,14 +911,15 @@ html[data-theme="dark"] .answer-content .numeric-value { color: #fbdfaf; backgro
 html[data-theme="light"] .answer-content .numeric-value, html:not([data-theme]) .answer-content .numeric-value { color: #79531d; background: linear-gradient(100deg, #fff1d3, #fdf7eb); border-bottom: 1px solid #dfc591; border-radius: 4px; padding: 0 .17em; }
 
 /* Markdown table treatment */
-.answer-content table { width: 100%; margin: 1.2rem 0; border-collapse: separate; border-spacing: 0; overflow: hidden; border: 1px solid #d8e2ee; border-radius: 10px; font-size: .92em; }
+.answer-content .table-scroll { width: 100%; overflow-x: auto; margin: 1.2rem 0; border: 1px solid #d8e2ee; border-radius: 10px; }
+.answer-content table { width: max-content; min-width: 100%; margin: 0; border-collapse: separate; border-spacing: 0; font-size: .92em; }
 .answer-content th, .answer-content td { padding: .72rem .85rem; text-align: left; vertical-align: top; border-right: 1px solid #dfe7f1; border-bottom: 1px solid #dfe7f1; }
 .answer-content th:last-child, .answer-content td:last-child { border-right: 0; }
 .answer-content tr:last-child td { border-bottom: 0; }
 .answer-content th { color: #173d78; background: linear-gradient(100deg, #eef5ff, #fafcff); font-weight: 700; }
 .answer-content td { color: #294f87; background: rgba(255,255,255,.82); }
 .answer-content tr:nth-child(even) td { background: #f7faff; }
-html[data-theme="dark"] .answer-content table { border-color: #49454b; box-shadow: inset 0 1px 0 rgba(222, 195, 149, .08); }
+html[data-theme="dark"] .answer-content .table-scroll { border-color: #49454b; box-shadow: inset 0 1px 0 rgba(222, 195, 149, .08); }
 html[data-theme="dark"] .answer-content th, html[data-theme="dark"] .answer-content td { border-color: #49454b; }
 html[data-theme="dark"] .answer-content th { color: #fbdfaf; background: linear-gradient(100deg, #30271f, #221e29); }
 html[data-theme="dark"] .answer-content td { color: #e8dff0; background: #1e1a25; }
