@@ -11,12 +11,26 @@ SimpleDirectoryReader -> PyMuPDF text -> pypdf text -> PyMuPDF OCR with Tesserac
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Iterable
 
 
 def _cell_text(value) -> str:
     return "" if value is None else str(value).strip()
+
+
+def _data_like(cell: str) -> bool:
+    """True for cell values that belong in records, not header labels.
+
+    Pure numbers, ISO dates/datetimes, and URLs are record values.  A candidate
+    header row full of these is really the first data row.
+    """
+    return bool(
+        re.match(r"^https?://", cell, flags=re.I)
+        or re.match(r"^\d{4}-\d{2}-\d{2}", cell)
+        or re.fullmatch(r"\(?-?[\d,]*\.?\d+\)?%?", cell)
+    )
 
 
 def _header_row_index(table: list[tuple]) -> int | None:
@@ -44,7 +58,25 @@ def _header_row_index(table: list[tuple]) -> int | None:
         score = len(text_labels) * 4 + dense_rows * 3 + min(width, 12)
         if best is None or score > best[0]:
             best = (score, index)
-    return best[1] if best else None
+    if best is None:
+        return None
+    # Sparse trackers can score a record row above the real header because the
+    # density threshold scales with the candidate's own width.  A row holding
+    # dates/URLs/numbers under a fully-labelled text row is data, not a header.
+    index = best[1]
+    while index > 0:
+        current = [_cell_text(value) for value in table[index] if _cell_text(value)]
+        above = [_cell_text(value) for value in table[index - 1] if _cell_text(value)]
+        if (
+            sum(_data_like(cell) for cell in current) >= 2
+            and above
+            and not any(_data_like(cell) for cell in above)
+            and len(above) >= max(2, len(current) - 2)
+        ):
+            index -= 1
+            continue
+        break
+    return index
 
 
 def _clean_headers(header_rows: list[tuple]) -> list[str]:
@@ -74,8 +106,107 @@ def _clean_headers(header_rows: list[tuple]) -> list[str]:
         headers.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
     return headers
 
+
+def _key_value_layout(table: list[tuple]) -> tuple[list[str] | None, int]:
+    """Recognize headerless summary sheets shaped as label/value pairs.
+
+    Report cards such as "Total people contacted | 40" have no header row at
+    all, so they were previously skipped and invisible to every query engine.
+    """
+    populated = []
+    for row in table:
+        filled = [(column, _cell_text(value)) for column, value in enumerate(row) if _cell_text(value)]
+        if filled:
+            populated.append(filled)
+    if len(populated) < 3:
+        return None, 0
+    pairs = 0
+    for filled in populated:
+        if not (1 <= len(filled) <= 2 and filled[0][0] == 0 and filled[-1][0] <= 1):
+            return None, 0
+        if _data_like(filled[0][1]):
+            return None, 0
+        if len(filled) == 2:
+            pairs += 1
+    if pairs < 3:
+        return None, 0
+    return ["Item", "Value"], 0
+
+
+def _merge_subheader_row(
+    table: list[tuple], header_start: int, header_index: int, headers: list[str]
+) -> tuple[list[str], int] | None:
+    """Fold a cross-tab label row below the header into the header itself.
+
+    A matrix like "Semester" spanning three columns with a following row of
+    "Summer C 2025 / Fall 2025 / Spring 2026" and X marks underneath needs the
+    labels merged into the headers; otherwise the labels are stored as a data
+    row and the X-mark columns are indistinguishable.
+    """
+    bases: dict[str, int] = {}
+    for header in headers:
+        base = re.sub(r"_\d+$", "", header)
+        bases[base] = bases.get(base, 0) + 1
+    ambiguous = {
+        column for column, header in enumerate(headers)
+        if bases[re.sub(r"_\d+$", "", header)] > 1 or header.startswith("Column ")
+    }
+    if not ambiguous:
+        return None
+    for index in range(header_index + 1, min(header_index + 4, len(table))):
+        cells = [_cell_text(value) for value in table[index]]
+        filled = [column for column, cell in enumerate(cells) if cell]
+        if not filled:
+            continue
+        if not set(filled) <= ambiguous or any(_data_like(cells[column]) for column in filled):
+            return None
+        following = table[index + 1:index + 7]
+        dense = sum(
+            sum(bool(_cell_text(value)) for value in row) >= 2 for row in following
+        )
+        if dense < 2:
+            return None
+        merged = _clean_headers([*table[header_start:header_index + 1], table[index]])
+        return merged, index + 1
+    return None
+
+
 def _total_chars(docs: Iterable[Document]) -> int:
     return sum(len(doc.text or "") for doc in docs)
+
+
+def _sheet_merged_ranges(file_path: Path) -> dict[str, list[tuple[int, int, int, int]]]:
+    """Merged-cell ranges per worksheet, read straight from the workbook XML.
+
+    openpyxl's read-only mode does not expose merged cells, and a full load of
+    a large workbook is slow, so the <mergeCells> entries are read directly.
+    Returns {sheet name: [(min_col, min_row, max_col, max_row), ...]} 1-indexed.
+    """
+    import zipfile
+    from xml.etree import ElementTree
+
+    from openpyxl.utils.cell import range_boundaries
+
+    main = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    rel = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    result: dict[str, list[tuple[int, int, int, int]]] = {}
+    try:
+        with zipfile.ZipFile(file_path) as archive:
+            workbook = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+            rels = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+            targets = {item.get("Id"): item.get("Target", "") for item in rels}
+            for sheet in workbook.iter(f"{main}sheet"):
+                target = targets.get(sheet.get(f"{rel}id"), "")
+                member = target.lstrip("/") if target.startswith("/") else f"xl/{target}"
+                sheet_xml = ElementTree.fromstring(archive.read(member))
+                result[sheet.get("name")] = [
+                    range_boundaries(merge.get("ref"))
+                    for merge in sheet_xml.iter(f"{main}mergeCell")
+                    if merge.get("ref")
+                ]
+    except Exception:
+        return {}
+    return result
 
 
 def _get_config_value(name: str, default=None):
@@ -140,39 +271,75 @@ def _cache_table(
     *,
     sheet_name: str,
     formula_rows: Iterable[tuple] | None = None,
+    merged_ranges: list[tuple[int, int, int, int]] | None = None,
 ) -> None:
     """Store the primary tabular region exactly in SQLite."""
     table = list(rows)
     header_index = _header_row_index(table)
     if header_index is None:
-        return
-    # Keep up to three contiguous header rows so a report matrix such as
-    # "Photovoltaic → Capacity MW → Residential" becomes one usable field.
-    header_start = header_index
-    while header_start > 0 and header_index - header_start < 2:
-        if not any(_cell_text(value) for value in table[header_start - 1]):
-            break
-        header_start -= 1
-    headers = _clean_headers(table[header_start:header_index + 1])
+        headers, data_start = _key_value_layout(table)
+        if headers is None:
+            return
+    else:
+        # Keep up to three contiguous header rows so a report matrix such as
+        # "Photovoltaic → Capacity MW → Residential" becomes one usable field.
+        header_start = header_index
+        while header_start > 0 and header_index - header_start < 2:
+            if not any(_cell_text(value) for value in table[header_start - 1]):
+                break
+            header_start -= 1
+        headers = _clean_headers(table[header_start:header_index + 1])
+        data_start = header_index + 1
+        merged = _merge_subheader_row(table, header_start, header_index, headers)
+        if merged is not None:
+            headers, data_start = merged
     data_indices = []
-    end = len(table)
     blank_run = 0
-    for index, row in enumerate(table[header_index + 1:], start=header_index + 1):
+    for index, row in enumerate(table[data_start:], start=data_start):
         populated = [_cell_text(value) for value in row if _cell_text(value)]
         if not populated:
             blank_run += 1
             if blank_run >= 3:
-                end = index - 2
                 break
             continue
-        # Report footnotes are often a single long cell immediately after the
-        # data block. They are metadata, not records.
-        if data_indices and len(populated) == 1 and len(populated[0]) >= 80:
-            end = index
-            break
         blank_run = 0
+        # Report footnotes are often single-cell rows around the data block —
+        # a long note sentence or a bare link line. They are metadata, not records.
+        if len(populated) == 1 and populated[0].lower().startswith(("http://", "https://", "www.")):
+            continue
+        if data_indices and len(populated) == 1 and len(populated[0]) >= 80:
+            break
         data_indices.append(index)
-    materialized_rows = [table[index] for index in data_indices]
+    # Excel stores a merged cell's value only in its top-left anchor, so group
+    # labels spanning several records (a merged "Specialization" column) read
+    # as blanks. Propagate anchors into the selected data rows only — header
+    # rows are handled by _clean_headers, and footer merges stay untouched.
+    overrides: dict[int, dict[int, object]] = {}
+    data_set = set(data_indices)
+    for min_col, min_row, max_col, max_row in merged_ranges or []:
+        anchor_row = table[min_row - 1] if min_row - 1 < len(table) else ()
+        anchor = anchor_row[min_col - 1] if min_col - 1 < len(anchor_row) else None
+        if not _cell_text(anchor):
+            continue
+        for row_index in range(min_row - 1, max_row):
+            if row_index not in data_set:
+                continue
+            for column_index in range(min_col - 1, max_col):
+                if column_index < len(headers):
+                    overrides.setdefault(row_index, {})[column_index] = anchor
+
+    def _filled(index: int) -> tuple:
+        row = table[index]
+        cells = overrides.get(index)
+        if not cells:
+            return row
+        widened = list(row) + [None] * (max(cells) + 1 - len(row))
+        for column_index, value in cells.items():
+            if not _cell_text(widened[column_index]):
+                widened[column_index] = value
+        return tuple(widened)
+
+    materialized_rows = [_filled(index) for index in data_indices]
     formula_table = list(formula_rows) if formula_rows is not None else None
     materialized_formulas = (
         [formula_table[index] for index in data_indices if index < len(formula_table)]
@@ -199,6 +366,7 @@ def _ingest_xlsx(file_path: Path) -> None:
     # Values answer financial questions; formulas expose model logic when requested.
     values_book = load_workbook(file_path, read_only=True, data_only=True)
     formulas_book = load_workbook(file_path, read_only=True, data_only=False)
+    merged_by_sheet = _sheet_merged_ranges(file_path)
     try:
         for values_sheet, formulas_sheet in zip(values_book.worksheets, formulas_book.worksheets):
             _cache_table(
@@ -206,6 +374,7 @@ def _ingest_xlsx(file_path: Path) -> None:
                 file_path,
                 sheet_name=values_sheet.title,
                 formula_rows=formulas_sheet.iter_rows(values_only=True),
+                merged_ranges=merged_by_sheet.get(values_sheet.title),
             )
     finally:
         values_book.close()

@@ -13,6 +13,10 @@ from config import Config
 
 SPREADSHEET_EXTENSIONS = {".csv", ".xlsx"}
 
+# Bump when the parser in doc_loader changes so previously ingested files are
+# re-parsed lazily on their next query instead of serving stale rows.
+INGEST_VERSION = 3
+
 
 def file_hash(file_path: Path) -> str:
     digest = hashlib.sha256()
@@ -89,6 +93,12 @@ def _connect(file_path: Path) -> sqlite3.Connection:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_sheet_rows_file ON spreadsheet_rows(file_hash, sheet_name)"
     )
+    try:
+        connection.execute(
+            "ALTER TABLE spreadsheet_files ADD COLUMN ingest_version INTEGER NOT NULL DEFAULT 0"
+        )
+    except sqlite3.OperationalError:
+        pass  # column already exists
     return connection
 
 
@@ -112,8 +122,8 @@ def finish_ingestion(file_path: Path) -> int:
             "SELECT COUNT(*) FROM spreadsheet_rows WHERE file_hash = ?", (digest,)
         ).fetchone()[0])
         connection.execute(
-            "UPDATE spreadsheet_files SET status='ready', row_count=?, error='', updated_at=CURRENT_TIMESTAMP WHERE file_hash=?",
-            (count, digest),
+            "UPDATE spreadsheet_files SET status='ready', row_count=?, error='', ingest_version=?, updated_at=CURRENT_TIMESTAMP WHERE file_hash=?",
+            (count, INGEST_VERSION, digest),
         )
     return count
 
@@ -136,9 +146,9 @@ def is_ready(file_path: Path) -> bool:
     digest = file_hash(file_path)
     with _connect(file_path) as connection:
         row = connection.execute(
-            "SELECT status FROM spreadsheet_files WHERE file_hash = ?", (digest,)
+            "SELECT status, ingest_version FROM spreadsheet_files WHERE file_hash = ?", (digest,)
         ).fetchone()
-    return bool(row and row[0] == "ready")
+    return bool(row and row[0] == "ready" and row[1] == INGEST_VERSION)
 
 
 def index_sheet(
@@ -295,7 +305,20 @@ def structured_snapshot(filenames: list[str], upload_dir: Path) -> tuple[list[di
         for name in filenames
         if (upload_dir / name).suffix.lower() in SPREADSHEET_EXTENSIONS
     ]
-    if not paths or any(not is_ready(path) for path in paths):
+    if not paths:
+        return [], []
+    for path in paths:
+        if is_ready(path):
+            continue
+        # Stale rows from an older parser version are re-parsed here so the
+        # ingestion fix applies without requiring a re-upload.
+        try:
+            from doc_loader import ingest_spreadsheet
+
+            ingest_spreadsheet(path)
+        except Exception:
+            return [], []
+    if any(not is_ready(path) for path in paths):
         return [], []
     hashes = [file_hash(path) for path in paths]
     placeholders = ",".join("?" for _ in hashes)

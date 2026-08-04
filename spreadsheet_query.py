@@ -61,6 +61,24 @@ def _number(value) -> Decimal | None:
         return None
 
 
+_NUMBER_TOKEN = re.compile(r"^\(?\s*-?\s*[$€£₹]?\s*\d[\d,]*(?:\.\d+)?\s*%?\s*\)?$")
+
+
+def _strict_number(value) -> Decimal | None:
+    """Parse a value that is entirely a number, unlike the lenient _number.
+
+    _number strips letters, so "Spring 2026" becomes 2026 and a course code
+    like "ABE5038" becomes 5038.  Type detection and aggregation must reject
+    those; only currency symbols, thousands separators, parentheses negatives,
+    and percent signs are allowed decoration.
+    """
+    if isinstance(value, (int, float)):
+        return Decimal(str(value))
+    if not _NUMBER_TOKEN.match(str(value).strip()):
+        return None
+    return _number(value)
+
+
 def _is_missing(value) -> bool:
     """Treat common report-export missing markers as missing, not categories."""
     return value is None or str(value).strip().lower() in {"", ".", "-", "n/a", "na", "null", "none"}
@@ -93,7 +111,9 @@ def _matches(value, operator: str, expected) -> bool:
 def _markdown_table(rows: list[dict], columns: list[str], row_limit: int = 20) -> str:
     # Do not silently discard fields.  The browser makes wide Markdown tables
     # horizontally scrollable, so a CSV's complete schema remains available.
-    header = "| " + " | ".join(columns) + " |"
+    # Merged multi-row headers contain literal pipes ("Semester | Fall 2025"),
+    # which must be escaped or the table columns shift out of alignment.
+    header = "| " + " | ".join(column.replace("|", "\\|") for column in columns) + " |"
     divider = "| " + " | ".join("---" for _ in columns) + " |"
     body = []
     for row in rows[:row_limit]:
@@ -145,7 +165,7 @@ def _deterministic_extreme(query: str, schemas: list[dict], rows: list[dict]) ->
     column = _best_mentioned_column(lowered, columns)
     if column is None:
         return None
-    numeric_rows = [(row, _number(row["values"].get(column))) for row in rows]
+    numeric_rows = [(row, _strict_number(row["values"].get(column))) for row in rows]
     numeric_rows = [(row, value) for row, value in numeric_rows if value is not None]
     if not numeric_rows:
         return None
@@ -206,7 +226,7 @@ def _grouped_result(plan: dict, schemas: list[dict], rows: list[dict]) -> dict |
         rendered = {group_by: label, "records": len(group_rows)}
         values_by_group[label] = {}
         for metric in metrics:
-            numbers = [_number(row["values"].get(metric)) for row in group_rows]
+            numbers = [_strict_number(row["values"].get(metric)) for row in group_rows]
             numbers = [number for number in numbers if number is not None]
             if aggregation == "count":
                 result = Decimal(len(numbers))
@@ -360,20 +380,14 @@ def _semantic_dataset_answer(query: str, plan: dict, schemas: list[dict], rows: 
         "row_count": len(scoped_rows),
         "columns": {},
     }
-    mixed_columns = []
     for column in columns:
         values = [row["values"].get(column) for row in scoped_rows if column in row["values"]]
         non_empty = [value for value in values if not _is_missing(value)]
-        numeric = [_number(value) for value in non_empty]
+        numeric = [_strict_number(value) for value in non_empty]
         numeric = [value for value in numeric if value is not None]
         column_evidence = {"non_empty": len(non_empty), "missing": len(values) - len(non_empty)}
         numeric_ratio = len(numeric) / len(non_empty) if non_empty else 0
-        # A substantial mix of numeric values and text labels in one field is
-        # usually a report layout with embedded subheaders, not a clean table.
-        if 0.05 <= numeric_ratio <= 0.95:
-            mixed_columns.append(column)
-            column_evidence["mixed_data_types"] = True
-        if non_empty and len(numeric) / len(non_empty) >= 0.9:
+        if non_empty and numeric_ratio >= 0.9:
             if min(numeric) == max(numeric):
                 column_evidence["constant_value"] = str(numeric[0])
             else:
@@ -382,6 +396,23 @@ def _semantic_dataset_answer(query: str, plan: dict, schemas: list[dict], rows: 
                     "average": str(sum(numeric) / len(numeric)),
                     "negative_count": sum(value < 0 for value in numeric),
                 }
+        elif len(numeric) >= 5 and numeric_ratio >= 0.3:
+            # A mostly-numeric field carrying report markers such as "NM".
+            # Summarize the numeric subset and surface the markers instead of
+            # refusing to analyze the worksheet.
+            column_evidence["mixed_data_types"] = True
+            column_evidence["numeric_subset"] = {
+                "count": len(numeric),
+                "min": str(min(numeric)), "max": str(max(numeric)),
+                "average": str(sum(numeric) / len(numeric)),
+                "negative_count": sum(value < 0 for value in numeric),
+            }
+            markers = Counter(
+                str(value) for value in non_empty if _strict_number(value) is None
+            )
+            column_evidence["non_numeric_labels"] = [
+                {"value": value, "count": count} for value, count in markers.most_common(6)
+            ]
         else:
             counts = Counter(str(value) for value in non_empty)
             column_evidence["top_values"] = [
@@ -389,18 +420,6 @@ def _semantic_dataset_answer(query: str, plan: dict, schemas: list[dict], rows: 
                 for value, count in counts.most_common(12)
             ]
         evidence["columns"][column] = column_evidence
-
-    if mixed_columns:
-        return {
-            "answer": (
-                "Analysis paused because this worksheet is not yet a clean flat table. "
-                f"The following field(s) mix numeric values with text/report labels: **{', '.join(mixed_columns)}**. "
-                "This usually means the sheet contains embedded subheaders or multiple table regions. "
-                "Extracting those regions into separate tables is required before a trustworthy trend summary can be calculated."
-            ),
-            "sources": [{"file": scope["file"], "text": f"{scope['sheet']} schema validation detected mixed-type fields", "score": 1.0}],
-            "thinking_steps": ["Stopped full-dataset analysis to avoid treating report labels as data values."],
-        }
 
     group_by = _resolve_column(plan.get("group_by"), all_columns)
     if group_by:
@@ -435,6 +454,11 @@ Rules:
 - A constant date/year field means the data is a snapshot for that period, not
   a time series. Do not call cross-sectional patterns a time trend.
 - Do not report redundant average/minimum/maximum statistics for a constant field.
+- A field marked mixed_data_types holds report markers (for example "NM") among
+  its numbers; its statistics cover only the numeric subset, so state that caveat.
+- A column whose name embeds a category (for example "Semester | Spring 2026")
+  is a cross-tab marker column: a non-empty value such as "X" means the row
+  belongs to that category, and its non_empty count is the category's row count.
 - State only insights supported by the evidence. Do not list hypothetical
   "missing calculations" when the question asks for a summary.
 
@@ -479,6 +503,137 @@ def _column_names_result(query: str, schemas: list[dict]) -> dict | None:
     }
 
 
+def _matching_columns(requested: str | None, columns: list[str]) -> list[str]:
+    """Every column the requested name could mean, including deduplicated siblings.
+
+    Duplicate headers are stored as "Semester", "Semester_2", "Semester_3" and
+    merged multi-row headers as "Semester | Fall 2025"; a filter naming just
+    "Semester" must consider all of them.
+    """
+    if not requested:
+        return []
+    lowered = requested.strip().lower()
+    exact = next((column for column in columns if column.lower() == lowered), None)
+    if exact:
+        base = re.sub(r"_\d+$", "", exact).lower()
+        return [
+            column for column in columns
+            if column == exact or re.sub(r"_\d+$", "", column).lower() == base
+        ]
+    matches = [column for column in columns if lowered in column.lower()]
+    if matches:
+        return matches
+    normalized = _normalised_name(requested)
+    return [column for column in columns if normalized and normalized in _normalised_name(column)]
+
+
+def _apply_filters(rows_in: list[dict], filters: list[dict], all_columns: list[str]) -> list[dict] | None:
+    """Apply plan filters exactly as written; None when a column cannot be resolved."""
+    selected = rows_in
+    for condition in filters:
+        operator = condition.get("operator", "eq")
+        column = _resolve_column(condition.get("column"), all_columns)
+        if operator not in _FILTER_OPS or not column:
+            return None
+        selected = [
+            row for row in selected
+            if column in row["values"] and _matches(row["values"][column], operator, condition.get("value", ""))
+        ]
+    return selected
+
+
+def _apply_relaxed_filters(rows_in: list[dict], filters: list[dict], all_columns: list[str]) -> list[dict]:
+    """Zero-match retry: substring matching across every plausible sibling column."""
+    selected = rows_in
+    for condition in filters:
+        operator = condition.get("operator", "eq")
+        if operator not in _FILTER_OPS:
+            return []
+        columns = _matching_columns(condition.get("column"), all_columns)
+        if not columns:
+            return []
+        expected = condition.get("value", "")
+        relaxed_operator = "contains" if operator == "eq" else operator
+        selected = [
+            row for row in selected
+            if any(
+                column in row["values"] and _matches(row["values"][column], relaxed_operator, expected)
+                for column in columns
+            )
+        ]
+    return selected
+
+
+def _apply_marker_filters(
+    rows_in: list[dict], filters: list[dict], all_columns: list[str]
+) -> tuple[list[dict], list[str]]:
+    """Cross-tab retry: a filter value that names a column means "that marker is set".
+
+    "Semester = Spring 2026" against a matrix whose header is
+    "Semester | Spring 2026" with X marks selects rows where that column is
+    non-empty; the category lives in the header, not in the cell values.
+    """
+    selected = rows_in
+    notes: list[str] = []
+    for condition in filters:
+        operator = condition.get("operator", "eq")
+        expected = str(condition.get("value", "") or "")
+        requested = str(condition.get("column") or "")
+        marker = None
+        if operator in {"eq", "contains"} and expected.strip():
+            combined = _normalised_name(f"{requested} {expected}")
+            alone = _normalised_name(expected)
+            for column in all_columns:
+                normalized = _normalised_name(column)
+                if normalized in {combined, alone}:
+                    marker = column
+                    break
+                if alone and alone in normalized and _normalised_name(requested) in normalized:
+                    marker = marker or column
+        if marker is not None:
+            notes.append(
+                f'Interpreted "{expected}" as the marker column "{marker}"; a non-empty cell means the row belongs to it.'
+            )
+            selected = [row for row in selected if not _is_missing(row["values"].get(marker))]
+            continue
+        columns = _matching_columns(requested, all_columns)
+        if operator not in _FILTER_OPS or not columns:
+            return [], notes
+        relaxed_operator = "contains" if operator == "eq" else operator
+        selected = [
+            row for row in selected
+            if any(
+                column in row["values"] and _matches(row["values"][column], relaxed_operator, expected)
+                for column in columns
+            )
+        ]
+    return selected, notes
+
+
+def _semantic_fallback(query: str, plan: dict, schemas: list[dict], rows: list[dict], note: str) -> dict | None:
+    """Answer from complete computed column evidence when exact execution fails.
+
+    Only the columns the plan referenced are profiled and sent to the LLM, so a
+    failed filter still yields a grounded answer (for example, listing the
+    values that do exist) instead of an empty table or a raw RAG sample.
+    """
+    relevant = [condition.get("column") for condition in plan.get("filters") or []]
+    relevant += [plan.get("value_column"), plan.get("group_by")]
+    relevant += plan.get("metrics") or []
+    semantic_plan = {
+        "file": plan.get("file"),
+        "sheet": plan.get("sheet"),
+        "relevant_columns": [column for column in relevant if column] or None,
+        "group_by": plan.get("group_by"),
+        "aggregation": plan.get("aggregation"),
+        "bin_size": plan.get("bin_size"),
+    }
+    result = _semantic_dataset_answer(query, semantic_plan, schemas, rows)
+    if result is not None:
+        result["thinking_steps"] = [note, *result.get("thinking_steps", [])]
+    return result
+
+
 def try_structured_query(query: str, filenames: list[str], upload_dir: Path) -> dict | None:
     """Return an exact SQLite-backed result, or None for semantic questions."""
     schemas, rows = structured_snapshot(filenames, upload_dir)
@@ -501,6 +656,9 @@ than a single exact calculation.
 Questions such as "which gender has the highest debt", "by region", "monthly trend",
 or "trends across age groups" are structured: plan a group operation rather than
 sampling rows or answering from a workbook profile.
+Some columns are cross-tab markers whose header embeds the category (for example
+"Semester | Spring 2026" holding X marks). To select rows in such a category,
+filter that exact column with {{"operator":"ne","value":""}}.
 
 For structured mode return:
 {{"mode":"structured","operation":"rows|count|sum|average|min|max","value_column":null,
@@ -549,46 +707,98 @@ Question: {query}
         return None
     sheet = plan.get("sheet")
     if plan["operation"] != "join_group" and len(schemas) > 1 and not sheet:
-        return {
-            "answer": (
-                "This workbook contains multiple worksheets at different levels of detail. "
-                "The requested calculation did not identify one worksheet, so it was stopped "
-                "to prevent double-counting. Please name the worksheet or ask for a workbook-wide summary."
-            ),
-            "sources": [],
-            "thinking_steps": ["Stopped an ambiguous cross-sheet calculation before combining incompatible row grains."],
-        }
-    candidates = [row for row in rows if not sheet or row["sheet"].lower() == str(sheet).lower()]
-    for condition in plan.get("filters", [])[:8]:
-        operator = condition.get("operator", "eq")
-        column = _resolve_column(condition.get("column"), all_columns)
-        if operator not in _FILTER_OPS or not column:
-            return None
-        candidates = [
-            row for row in candidates
-            if column in row["values"] and _matches(row["values"][column], operator, condition.get("value", ""))
+        # The sheet is unambiguous when the referenced columns resolve in
+        # exactly one worksheet (for example a lookup sheet next to the data).
+        referenced = [condition.get("column") for condition in plan.get("filters") or []]
+        referenced += [plan.get("value_column"), plan.get("group_by")]
+        referenced += plan.get("metrics") or []
+        referenced = [column for column in referenced if column]
+        matching = [
+            schema["sheet"] for schema in schemas
+            if referenced and all(_resolve_column(column, schema["columns"]) for column in referenced)
         ]
+        if len(set(matching)) == 1:
+            sheet = matching[0]
+            plan["sheet"] = sheet  # keep any later evidence fallback on the same worksheet
+        else:
+            return {
+                "answer": (
+                    "This workbook contains multiple worksheets at different levels of detail. "
+                    "The requested calculation did not identify one worksheet, so it was stopped "
+                    "to prevent double-counting. Please name the worksheet or ask for a workbook-wide summary."
+                ),
+                "sources": [],
+                "thinking_steps": ["Stopped an ambiguous cross-sheet calculation before combining incompatible row grains."],
+            }
+    scoped = [row for row in rows if not sheet or row["sheet"].lower() == str(sheet).lower()]
+    filters = plan.get("filters", [])[:8]
+    relaxation_notes: list[str] = []
+    candidates = _apply_filters(scoped, filters, all_columns) or []
+    if filters and not candidates:
+        candidates = _apply_relaxed_filters(scoped, filters, all_columns)
+        if candidates:
+            relaxation_notes.append(
+                "Exact filter matching found nothing; matched case-insensitive substrings across all similarly named columns instead."
+            )
+    if filters and not candidates:
+        candidates, marker_notes = _apply_marker_filters(scoped, filters, all_columns)
+        if candidates:
+            relaxation_notes.extend(marker_notes)
+    if not candidates:
+        # An empty match is a failed plan, not an authoritative answer. Explain
+        # from complete column evidence rather than presenting an empty table.
+        return _semantic_fallback(
+            query, plan, schemas, rows,
+            "Exact row filtering matched nothing, so the answer was computed from complete column evidence instead.",
+        )
 
     if plan["operation"] == "group":
-        return _grouped_result(plan, schemas, candidates)
+        result = _grouped_result(plan, schemas, candidates)
+        if result is None:
+            result = _semantic_fallback(
+                query, plan, schemas, rows,
+                "The planned grouping could not be computed exactly, so the answer was built from complete column evidence instead.",
+            )
+        return result
     if plan["operation"] == "join_group":
-        return _join_grouped_result(plan, schemas, candidates)
+        result = _join_grouped_result(plan, schemas, candidates)
+        if result is None:
+            result = _semantic_fallback(
+                query, plan, schemas, rows,
+                "The planned cross-sheet join could not be computed exactly, so the answer was built from complete column evidence instead.",
+            )
+        return result
 
     operation = plan["operation"]
     sources = [{"file": row["file"], "text": f"{row['sheet']} row {row['row']}", "score": 1.0} for row in candidates[:8]]
     if operation == "rows":
         limit = max(1, min(int(plan.get("limit") or 20), 50))
-        answer = f"Found **{len(candidates)} matching row(s)**.\n\n" + _markdown_table(candidates, all_columns, limit)
+        # Only show columns from the worksheets the matches came from; other
+        # sheets in the workbook contribute empty, misleading columns.
+        present = {(row["file"], row["sheet"]) for row in candidates}
+        table_columns = list(dict.fromkeys(
+            column
+            for schema in schemas
+            if (schema["file"], schema["sheet"]) in present
+            for column in schema["columns"]
+        )) or all_columns
+        answer = f"Found **{len(candidates)} matching row(s)**.\n\n" + _markdown_table(candidates, table_columns, limit)
     elif operation == "count":
         answer = f"The exact matching row count is **{len(candidates):,}**."
     else:
         column = _resolve_column(plan.get("value_column"), all_columns)
         if not column:
-            return None
-        values = [(row, _number(row["values"].get(column))) for row in candidates]
+            return _semantic_fallback(
+                query, plan, schemas, rows,
+                "The planned value column does not exist, so the answer was built from complete column evidence instead.",
+            )
+        values = [(row, _strict_number(row["values"].get(column))) for row in candidates]
         values = [(row, value) for row, value in values if value is not None]
         if not values:
-            answer = f"No numeric values were found in **{column}** for the matching rows."
+            return _semantic_fallback(
+                query, plan, schemas, rows,
+                f"No numeric values were found in {column}, so the answer was built from complete column evidence instead.",
+            )
         elif operation == "sum":
             answer = f"The exact sum of **{column}** is **{sum(value for _, value in values):,}** across {len(values):,} row(s)."
         elif operation == "average":
@@ -596,4 +806,11 @@ Question: {query}
         else:
             selected_row, selected_value = (min(values, key=lambda item: item[1]) if operation == "min" else max(values, key=lambda item: item[1]))
             answer = f"The exact {operation} of **{column}** is **{selected_value:,}** ({selected_row['sheet']}, row {selected_row['row']})."
-    return {"answer": answer, "sources": sources, "thinking_steps": ["Answered from the local structured spreadsheet store; vector embeddings were not required."]}
+    return {
+        "answer": answer,
+        "sources": sources,
+        "thinking_steps": [
+            *relaxation_notes,
+            "Answered from the local structured spreadsheet store; vector embeddings were not required.",
+        ],
+    }
