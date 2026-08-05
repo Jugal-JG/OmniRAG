@@ -11,6 +11,7 @@ import hashlib
 import logging
 import re
 import shutil
+import sqlite3
 import threading
 import time
 import uuid
@@ -346,6 +347,43 @@ def _directory_size(directory: Path) -> int:
     return total
 
 
+def _cached_spreadsheet_inventory(account_key: str, active_names: set[str]) -> list[dict]:
+    """Return human-readable spreadsheet cache records for the owner console.
+
+    The vector-index filenames are hash based, but the structured SQLite store
+    retains each workbook's original name, row count, and status.  Reading this
+    metadata lets the admin UI distinguish retained cache entries from files
+    that are still present in the user's active upload folder.
+    """
+    cache_dir = _safe_account_directory(Path(Config.CACHE_FOLDER) / "accounts", account_key)
+    database = cache_dir / "spreadsheets.sqlite3"
+    if not database.is_file():
+        return []
+    try:
+        connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
+        try:
+            rows = connection.execute(
+                """SELECT file_name, status, row_count, updated_at
+                   FROM spreadsheet_files
+                   ORDER BY updated_at DESC, file_name COLLATE NOCASE"""
+            ).fetchall()
+        finally:
+            connection.close()
+    except sqlite3.Error as exc:
+        logger.info("[admin] Could not read spreadsheet cache for %s: %s", account_key, exc)
+        return []
+    return [
+        {
+            "name": str(name),
+            "status": str(status),
+            "rows": int(row_count),
+            "updated_at": str(updated_at),
+            "is_active_upload": str(name) in active_names,
+        }
+        for name, status, row_count, updated_at in rows
+    ]
+
+
 def _admin_user_summary(profile: dict) -> dict:
     account_key = profile["account_key"]
     upload_dir = _safe_account_directory(Path(Config.UPLOAD_FOLDER), account_key)
@@ -360,10 +398,14 @@ def _admin_user_summary(profile: dict) -> dict:
             except OSError:
                 continue
     upload_bytes = sum(file["bytes"] for file in files)
+    cached_spreadsheets = _cached_spreadsheet_inventory(
+        account_key, {file["name"] for file in files}
+    )
     cache_bytes = _directory_size(cache_dir)
     return {
         **profile,
         "files": files,
+        "cached_spreadsheets": cached_spreadsheets,
         "upload_bytes": upload_bytes,
         "cache_bytes": cache_bytes,
         "total_bytes": upload_bytes + cache_bytes,

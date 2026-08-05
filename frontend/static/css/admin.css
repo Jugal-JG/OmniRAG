@@ -15,7 +15,7 @@ body { margin: 0; color: #142035; background: #f5f7fb; font-family: -apple-syste
 h1, h2, p { margin-top: 0; }
 h1 { margin-bottom: 10px; font-size: clamp(2rem, 5vw, 3.1rem); letter-spacing: -.045em; }
 .admin-intro > p:last-child, .users-heading p { color: #667085; }
-.summary-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 14px 0 42px; }
+.summary-cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; margin: 14px 0 42px; }
 .summary-card, .user-card { border: 1px solid #dce4ef; background: #fff; box-shadow: 0 8px 24px rgba(23, 43, 77, .05); }
 .summary-card { border-radius: 14px; padding: 18px; }
 .summary-card span { display: block; color: #667085; font-size: .8rem; font-weight: 650; }
@@ -35,9 +35,19 @@ h1 { margin-bottom: 10px; font-size: clamp(2rem, 5vw, 3.1rem); letter-spacing: -
 .storage-stat span { display: block; color: #6e7b8f; font-size: .7rem; }
 .storage-stat strong { display: block; margin-top: 4px; color: #263c5d; font-size: .88rem; }
 .user-files { border-top: 1px solid #e4eaf2; padding: 15px 20px; }
+.user-files h4 { margin: 0 0 9px; color: #405675; font-size: .78rem; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
+.cache-files { background: #fbfdff; }
+.cache-note { margin: -2px 0 8px; color: #78869a; font-size: .8rem; }
 .file-empty { color: #7a8798; font-size: .9rem; }
 .file-row { display: flex; align-items: center; gap: 11px; padding: 7px 0; }
 .file-row + .file-row { border-top: 1px solid #eef2f6; }
+.cache-row { display: flex; align-items: center; gap: 11px; padding: 7px 0; }
+.cache-row + .cache-row { border-top: 1px solid #eef2f6; }
+.cache-row > i { color: #4381b8; }
+.cache-detail { color: #78869a; font-size: .8rem; white-space: nowrap; }
+.cache-state { border-radius: 999px; margin-left: auto; padding: 3px 7px; font-size: .72rem; font-weight: 650; white-space: nowrap; }
+.cache-state.active { color: #2d6e48; background: #e8f6ed; }
+.cache-state.retained { color: #796031; background: #fff4d9; }
 .file-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .file-size { color: #78869a; font-size: .8rem; white-space: nowrap; }
 .file-delete, .danger-button { border: 1px solid #deb8c0; color: #963f4f; background: #fff8f8; border-radius: 7px; padding: 6px 9px; font: inherit; font-size: .8rem; cursor: pointer; }
@@ -46,7 +56,7 @@ h1 { margin-bottom: 10px; font-size: clamp(2rem, 5vw, 3.1rem); letter-spacing: -
 .forget-button { border-color: #9e4f60; color: #fff; background: #9e4f60; }
 .forget-button:hover { background: #7d3747; }
 .admin-error { padding: 18px; color: #9e2537; background: #fff1f2; border: 1px solid #f0bcc5; border-radius: 12px; }
-@media (max-width: 780px) { .admin-page { width: min(100% - 28px, 1180px); } .admin-header, .user-top { align-items: flex-start; flex-direction: column; } .summary-cards { grid-template-columns: repeat(2, 1fr); } .user-storage { width: 100%; } }
+@media (max-width: 780px) { .admin-page { width: min(100% - 28px, 1180px); } .admin-header, .user-top { align-items: flex-start; flex-direction: column; } .summary-cards { grid-template-columns: repeat(2, 1fr); } .user-storage { width: 100%; } .cache-row { align-items: flex-start; flex-wrap: wrap; } .cache-state { margin-left: 0; } }
 @media (max-width: 460px) { .admin-actions { align-items: flex-end; flex-direction: column; } .summary-cards { grid-template-columns: 1fr; } }
 html[data-theme="dark"] { color-scheme: dark; }
 html[data-theme="dark"] body { color: #e8dff0; background: #100c17; }
@@ -61,6 +71,12 @@ html[data-theme="dark"] .user-email { color: #b8d5f2; }
 html[data-theme="dark"] .storage-stat { background: #16111d; }
 html[data-theme="dark"] .storage-stat span { color: #cbc4cc; }
 html[data-theme="dark"] .user-files, html[data-theme="dark"] .user-footer, html[data-theme="dark"] .file-row + .file-row { border-color: #49454b; }
+html[data-theme="dark"] .cache-files { background: #1a1520; }
+html[data-theme="dark"] .user-files h4 { color: #b8d5f2; }
+html[data-theme="dark"] .cache-note, html[data-theme="dark"] .cache-detail { color: #cbc4cc; }
+html[data-theme="dark"] .cache-row + .cache-row { border-color: #49454b; }
+html[data-theme="dark"] .cache-state.active { color: #a6e5ba; background: #1d452a; }
+html[data-theme="dark"] .cache-state.retained { color: #f0d393; background: #55421d; }
 html[data-theme="dark"] .user-footer { background: #1a1520; }
 html[data-theme="dark"] .file-delete, html[data-theme="dark"] .danger-button { color: #ffc0c9; background: #2d1a22; border-color: #9e4f60; }
 html[data-theme="dark"] .admin-error { color: #ffc0c9; background: #321923; border-color: #9e4f60; }
